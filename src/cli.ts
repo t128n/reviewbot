@@ -50,6 +50,7 @@ program
       `Repositories:       ${status.repositories}`,
       `Last successful poll: ${status.lastPoll ?? "never"}`,
       `Queue:              ${status.queued} queued; active: ${status.activeJob ?? "none"}`,
+      `Duplicate cases:    ${status.duplicateCases.pending} pending, ${status.duplicateCases.closed} closed, ${status.duplicateCases.cancelled} cancelled`,
       `Permission boundary: ${
         status.security
           ? `${status.security.status} (${status.security.detail})`
@@ -58,6 +59,11 @@ program
     ];
     for (const pollError of status.pollErrors) {
       lines.push(`Poll error (${pollError.repo}): ${pollError.error}`);
+    }
+    for (const duplicateError of status.duplicateErrors) {
+      lines.push(
+        `Duplicate case (${duplicateError.repo}#${duplicateError.issueNumber}): ${duplicateError.error}`,
+      );
     }
     if (status.recentFailures.length > 0) {
       lines.push("Recent failures:");

@@ -1,0 +1,33 @@
+# Likely duplicate
+
+Use when the reports probably match but one material difference remains unresolved.
+
+## Response target
+
+Explain the similarity, name the unresolved difference, and ask one question that could change the decision. Aim for 50 to 100 words in two to four short paragraphs.
+
+Reviewbot appends the 24-hour disclosure after it validates the decision. Write only the text before that disclosure.
+
+A finished response leaves the reader knowing which answer would make the cases the same or different.
+
+## Example responses
+
+> I think this might be the same issue as #123. Both reports describe the application freezing when switching workspaces, and the steps match closely.
+>
+> The main difference I can see is that #123 was reported on Windows, while you're using Linux. Does the freeze also happen when switching between existing workspaces, or only when creating a new one?
+>
+> If it's the same behavior, I'll keep the discussion in #123.
+
+> This looks close to #64. Both reports show the same reconnect error, but yours happens after a successful reconnect rather than during startup.
+>
+> Does the error still appear if you wait before sending the next message? That would tell us whether it's the same failure path.
+
+> This may be the same problem as #201. Both reports show the menu staying open after a tab switch, but #201 includes a screenshot from a different platform.
+>
+> Could you share a screenshot or the exact steps that trigger it on your setup? If the behavior matches, the details belong in #201.
+
+## Response constraints
+
+- Ask one question about behavior, reproduction, environment, or expected result.
+- Tie the question to the difference that matters.
+- Use the related-issue reference instead when the task already establishes a meaningful difference.

@@ -3,12 +3,16 @@ import type { GitHub, GitHubClient, PullSummary } from "./github.ts";
 import { READ_PERMISSIONS, canWriteRepository } from "./github.ts";
 import type {
   ConversationPayload,
+  DuplicateCommentPayload,
+  DuplicateDuePayload,
   FixPayload,
   ReviewPayload,
   TriagePayload,
 } from "./jobs.ts";
 import {
   ConversationPayloadSchema,
+  DuplicateCommentPayloadSchema,
+  DuplicateDuePayloadSchema,
   FixPayloadSchema,
   ReviewPayloadSchema,
   TriagePayloadSchema,
@@ -16,22 +20,29 @@ import {
   reviewKey,
 } from "./jobs.ts";
 import type { Logger } from "./log.ts";
-import type { OpenCodeAdapter } from "./opencode.ts";
+import type { OpenCodeAdapter, PromptTask } from "./opencode.ts";
 import { OpenCodeUnavailableError, TaskExecutionError } from "./opencode.ts";
 import type { Publisher } from "./publish.ts";
 import { PublishError } from "./publish.ts";
 import {
   ConversationResultSchema,
+  DuplicateReassessmentSchema,
   FixResultSchema,
   ReviewResultSchema,
   ResultValidationError,
   TriageResultSchema,
   parseStructuredResult,
+  type DuplicateReassessment,
 } from "./schemas.ts";
 import type { WorkspaceManager } from "./workspace.ts";
 import { GitError, fixBranchName } from "./workspace.ts";
 import { renderDiffContext, type DiffFile } from "./diff.ts";
-import { selectRelatedIssues } from "./related.ts";
+import { discoverDuplicateCandidates } from "./duplicate-discovery.ts";
+import {
+  DuplicateLifecycle,
+  type ReassessmentRequest,
+} from "./duplicate-lifecycle.ts";
+import { readDecisionReference } from "./duplicates.ts";
 
 export class InterruptedJobError extends Error {
   constructor(message: string) {
@@ -61,12 +72,13 @@ export class Worker {
   private readonly publisher: Publisher;
   private readonly workspace: WorkspaceManager;
   private readonly logger: Logger;
-  private readonly prompt: string;
+  private readonly promptFor: (task: PromptTask) => string;
   private readonly gateOpen: () => boolean;
   private readonly host: string;
   private readonly botLogin: string;
   private readonly closeGate: (reason: string) => void;
   private readonly isStopping: () => boolean;
+  private readonly duplicates: DuplicateLifecycle;
 
   constructor(options: {
     store: Store;
@@ -75,7 +87,7 @@ export class Worker {
     publisher: Publisher;
     workspace: WorkspaceManager;
     logger: Logger;
-    prompt: string;
+    promptFor: (task: PromptTask) => string;
     gateOpen: () => boolean;
     host: string;
     botLogin: string;
@@ -88,12 +100,20 @@ export class Worker {
     this.publisher = options.publisher;
     this.workspace = options.workspace;
     this.logger = options.logger;
-    this.prompt = options.prompt;
+    this.promptFor = options.promptFor;
     this.gateOpen = options.gateOpen;
     this.host = options.host;
     this.botLogin = options.botLogin;
     this.closeGate = options.closeGate ?? (() => {});
     this.isStopping = options.isStopping ?? (() => false);
+    this.duplicates = new DuplicateLifecycle({
+      store: this.store,
+      github: this.github,
+      publisher: this.publisher,
+      logger: this.logger,
+      botLogin: this.botLogin,
+      reassess: (request) => this.runDuplicateReassessment(request),
+    });
   }
 
   /** Process at most one job. Returns false when the queue is empty or gated. */
@@ -108,6 +128,7 @@ export class Worker {
     );
     try {
       const result = await this.process(job);
+      this.noteDuplicateOutcome(job, null);
       this.store.completeJob(job.id, result);
       this.logger.info(
         { jobId: job.id, kind: job.kind, elapsedMs: Date.now() - started },
@@ -136,6 +157,7 @@ export class Worker {
         retryable: classification.retryable,
         delaySeconds: classification.delaySeconds,
       });
+      this.noteDuplicateOutcome(job, classification.message);
       if (
         job.kind === "fix" &&
         this.store.getJob(job.id)?.state === "failed"
@@ -183,8 +205,55 @@ export class Worker {
         );
       case "fix":
         return this.runFix(repo, parsePayload(FixPayloadSchema, job.payload));
+      case "duplicate-due":
+        return this.duplicates.processDue(
+          repo,
+          parsePayload(DuplicateDuePayloadSchema, job.payload).issueNumber,
+        );
+      case "duplicate-comment": {
+        const payload = parsePayload(
+          DuplicateCommentPayloadSchema,
+          job.payload,
+        );
+        return this.duplicates.processComment({
+          repo,
+          issueNumber: payload.issueNumber,
+          commentId: payload.commentId,
+          author: payload.author,
+          body: payload.body,
+        });
+      }
       default:
         throw new PermanentJobError(`Unknown job kind: ${job.kind}`);
+    }
+  }
+
+  /**
+   * Record duplicate retry state. Deadline retries are bounded by the store;
+   * comment retries are bounded by the failed-job key check in the poller.
+   */
+  private noteDuplicateOutcome(job: JobRecord, error: string | null): void {
+    if (job.kind !== "duplicate-due" && job.kind !== "duplicate-comment") return;
+    let issueNumber: number;
+    try {
+      const payload =
+        job.kind === "duplicate-due"
+          ? parsePayload(DuplicateDuePayloadSchema, job.payload)
+          : parsePayload(DuplicateCommentPayloadSchema, job.payload);
+      issueNumber = payload.issueNumber;
+    } catch {
+      return;
+    }
+    if (error === null) {
+      if (job.kind === "duplicate-due") {
+        this.store.markDuplicateCheckSuccess(job.repoId, issueNumber);
+      }
+      return;
+    }
+    if (job.kind === "duplicate-due") {
+      this.store.markDuplicateCheckFailure(job.repoId, issueNumber, error);
+    } else {
+      this.store.recordDuplicateError(job.repoId, issueNumber, error);
     }
   }
 
@@ -207,22 +276,35 @@ export class Worker {
     payload: TriagePayload,
   ): Promise<unknown> {
     const { octokit, token } = await this.readClient(repo);
-    let related: ReturnType<typeof selectRelatedIssues> = [];
-    try {
-      related = selectRelatedIssues(
-        { number: payload.issueNumber, title: payload.title, body: payload.body },
-        await this.github.listRecentIssues(octokit, repo.owner, repo.name),
-      );
-    } catch (error) {
-      this.logger.warn(
-        {
-          repo: repo.fullName,
-          issue: payload.issueNumber,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        "related issue context could not be retrieved",
-      );
+    const current = await this.github.getIssue(
+      octokit,
+      repo.owner,
+      repo.name,
+      payload.issueNumber,
+    );
+    if (current.isPullRequest) {
+      return { kind: "triage", skipped: "subject is a pull request" };
     }
+    if (current.state !== "open") {
+      return { kind: "triage", skipped: `issue is ${current.state}` };
+    }
+    const discussion = await this.github.listIssueCommentsForMarker(
+      octokit,
+      repo.owner,
+      repo.name,
+      payload.issueNumber,
+    );
+    const discovery = await discoverDuplicateCandidates({
+      github: this.github,
+      octokit,
+      owner: repo.owner,
+      repo: repo.name,
+      current,
+      currentComments: discussion,
+      logger: this.logger,
+    });
+    const bodyText = [current.title, current.body ?? ""].join("\n");
+
     const worktree = await this.workspace.createWorktree({
       repo,
       token,
@@ -235,28 +317,32 @@ export class Worker {
         title: `Triage ${repo.fullName}#${payload.issueNumber}`,
         mode: "read",
       });
-      await this.adapter.applyInstructions(sessionId, this.prompt);
+      await this.adapter.applyInstructions(sessionId, this.promptFor("triage"));
       const task = [
         `Repository: ${repo.fullName}`,
         "Repository root: ./repo (relative to this session directory).",
-        `Issue #${payload.issueNumber}: ${payload.title}`,
-        `Author: ${payload.author}`,
+        `Issue #${current.number}: ${current.title}`,
+        `Author: ${current.author}`,
         "Issue description:",
-        payload.body || "(no description)",
+        current.body || "(no description)",
         "",
-        related.length > 0
-          ? [
-              "Possibly related existing issues/PRs (context only):",
-              ...related.map(
-                (item) =>
-                  `- ${item.isPullRequest ? "PR" : "Issue"} #${item.number} [${item.state}] ${item.title}${item.excerpt ? ` — ${item.excerpt}` : ""}`,
-              ),
-              "",
-            ].join("\n")
-          : "No closely related issue or PR was found in recent repository history.",
+        "Existing discussion on this issue:",
+        this.formatDiscussion(discussion),
         "",
-        "Investigate this issue against the repository. Publish one concise assessment with evidence, material uncertainty, and a specific next step or clarification question when needed.",
-        'Return exactly one JSON object: {"comment": "markdown comment"}.',
+        `Explicit same-repository issue references found: ${
+          discovery.unresolvedReferences.length > 0
+            ? `unresolved ${discovery.unresolvedReferences.map((number) => `#${number}`).join(", ")}`
+            : "see candidates marked as referenced"
+        }`,
+        "",
+        discovery.searchUnavailable || discovery.recentUnavailable
+          ? "Duplicate search was partially unavailable. Treat the supplied candidates as incomplete and do not infer a duplicate that is not supported by them."
+          : "Duplicate candidates supplied by bounded repository search and direct references:",
+        this.formatCandidates(discovery.candidates),
+        "",
+        "Investigate this issue against the repository. Determine whether an existing issue is the same report, a likely duplicate, related, or independent. Compare actual content, symptoms, and discussion; a similar title or a citation alone is not proof.",
+        "The daemon publishes your comment. For a duplicate decision, explain the match concisely and do not state closure timing; the daemon appends the 24-hour disclosure. For likely_duplicate, ask one targeted question about a difference in behavior, reproduction, environment, or expected result.",
+        'Return exactly one JSON object: {"comment": "markdown comment", "duplicate": {"kind": "independent|related", "canonicalIssueNumber": null, "reason": "why"}} or {"comment": "markdown comment", "duplicate": {"kind": "confirmed_duplicate|likely_duplicate", "canonicalIssueNumber": 123, "reason": "why", "matchingEvidence": ["concrete shared fact"], "distinguishingQuestion": "required for likely_duplicate"}}.',
       ].join("\n");
       const run = await this.adapter.runTask({
         sessionId,
@@ -265,15 +351,146 @@ export class Worker {
       });
       const result = parseStructuredResult(run.text, TriageResultSchema);
       this.assertNotStopping();
-      const publication = await this.publisher.publishTriage({
+      const outcome = await this.duplicates.completeTriage({
         repo,
-        issueNumber: payload.issueNumber,
-        comment: result.comment,
+        octokit,
+        current,
+        result,
+        bodyText,
       });
-      if (publication.status === "skipped") {
-        return { kind: "triage", skipped: publication.reason };
-      }
-      return { kind: "triage", publication };
+      return { kind: "triage", outcome };
+    } finally {
+      await this.workspace.removeWorktree(repo, worktree.root);
+    }
+  }
+
+  private formatDiscussion(
+    comments: Array<{ author: string; body: string; createdAt: string }>,
+  ): string {
+    const selected = comments.slice(-10);
+    if (selected.length === 0) return "(no comments)";
+    return selected
+      .map(
+        (comment) =>
+          `- ${comment.author} (${comment.createdAt}): ${comment.body
+            .replace(/\s+/g, " ")
+            .slice(0, 1_000)}`,
+      )
+      .join("\n");
+  }
+
+  private formatCandidates(
+    candidates: Array<{
+      number: number;
+      title: string;
+      body: string;
+      state: string;
+      isPullRequest: boolean;
+      createdAt: string;
+      referenced: boolean;
+      comments: Array<{ author: string; body: string }>;
+    }>,
+  ): string {
+    if (candidates.length === 0) {
+      return "No same-repository candidate issues were retrieved.";
+    }
+    const text = candidates
+      .map((candidate) => {
+        const flags = [
+          candidate.referenced ? "explicitly referenced" : null,
+          candidate.isPullRequest ? "pull request" : null,
+        ].filter(Boolean);
+        const lines = [
+          `### Issue #${candidate.number} [${candidate.state}]${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`,
+          `Title: ${candidate.title}`,
+          `Created: ${candidate.createdAt}`,
+          `Body: ${candidate.body || "(no description)"}`,
+        ];
+        if (candidate.comments.length > 0) {
+          lines.push("Relevant comments:");
+          lines.push(
+            ...candidate.comments.map(
+              (comment) =>
+                `- ${comment.author}: ${comment.body.replace(/\s+/g, " ")}`,
+            ),
+          );
+        }
+        return lines.join("\n");
+      })
+      .join("\n\n");
+    return text.length > 60_000
+      ? `${text.slice(0, 60_000)}\n\n[Candidate context truncated by Reviewbot]`
+      : text;
+  }
+
+  private async runDuplicateReassessment(
+    request: ReassessmentRequest,
+  ): Promise<DuplicateReassessment> {
+    const { repo, issue, canonical, duplicateCase } = request;
+    const { octokit, token } = await this.readClient(repo);
+    const worktree = await this.workspace.createWorktree({
+      repo,
+      token,
+      source: "default",
+      label: `duplicate-${issue.number}`,
+    });
+    try {
+      const sessionId = await this.adapter.createSession({
+        directory: worktree.root,
+        title: `Duplicate reassessment ${repo.fullName}#${issue.number}`,
+        mode: "read",
+      });
+      await this.adapter.applyInstructions(
+        sessionId,
+        this.promptFor("duplicate-reassessment"),
+      );
+      const canonicalComments = await this.github.listIssueCommentsLimited(
+        octokit,
+        repo.owner,
+        repo.name,
+        canonical.number,
+        20,
+      );
+      const original = readDecisionReference(
+        duplicateCase.lastDecisionReference,
+      );
+      const task = [
+        `Repository: ${repo.fullName}`,
+        "Repository root: ./repo (relative to this session directory).",
+        `Duplicate case: issue #${issue.number} is currently classified as a ${duplicateCase.classification} duplicate of #${canonical.number}, state ${duplicateCase.status}.`,
+        `Original rationale: ${original.reason ?? "(not stored)"}`,
+        "",
+        `Issue #${issue.number}: ${issue.title}`,
+        "Description:",
+        issue.body || "(no description)",
+        "",
+        "New comments since the duplicate notice:",
+        this.formatDiscussion(request.newComments),
+        "",
+        "Existing discussion on this issue:",
+        this.formatDiscussion(request.discussion),
+        "",
+        `Canonical issue #${canonical.number}: ${canonical.title}`,
+        "Description:",
+        canonical.body || "(no description)",
+        "",
+        "Canonical issue discussion:",
+        this.formatDiscussion(canonicalComments),
+        "",
+        "Compare the new evidence with the canonical report. Use distinct only when the new information establishes a materially different problem; use uncertain when the evidence cannot be resolved safely. Do not claim that an issue was closed, reopened, or labelled — the daemon performs and reports those actions.",
+        'Return exactly one JSON object: {"comment": "markdown comment for the issue", "outcome": "distinct|still_duplicate|uncertain", "reason": "what the evidence establishes"}.',
+      ].join("\n");
+      const run = await this.adapter.runTask({
+        sessionId,
+        text: task,
+        timeoutMs: TIMEOUTS.triage,
+      });
+      const result = parseStructuredResult(
+        run.text,
+        DuplicateReassessmentSchema,
+      );
+      this.assertNotStopping();
+      return result;
     } finally {
       await this.workspace.removeWorktree(repo, worktree.root);
     }
@@ -332,7 +549,7 @@ export class Worker {
         title: `Review ${repo.fullName}#${payload.pullNumber}@${payload.headSha.slice(0, 7)}`,
         mode: "read",
       });
-      await this.adapter.applyInstructions(sessionId, this.prompt);
+      await this.adapter.applyInstructions(sessionId, this.promptFor("review"));
       const task = [
         `Repository: ${repo.fullName}`,
         "Repository root: ./repo (relative to this session directory). Findings paths must be repository-relative.",
@@ -524,7 +741,7 @@ export class Worker {
           sessionId,
         );
       }
-      await this.adapter.applyInstructions(sessionId, this.prompt);
+      await this.adapter.applyInstructions(sessionId, this.promptFor("conversation"));
       const task = [
         `Repository: ${repo.fullName}`,
         "Repository root: ./repo (relative to this session directory).",
@@ -550,7 +767,7 @@ export class Worker {
                 ? ["Review diff context:", payload.diffHunk.slice(0, 4000), ""]
                 : []),
               ...(payload.inReplyToId
-                ? [`This mentions the App inside review thread ${payload.inReplyToId}.`, ""]
+                ? [`This request is a reply in review thread ${payload.inReplyToId}.`, ""]
                 : []),
             ]
           : []),
@@ -681,7 +898,7 @@ export class Worker {
         title: `Fix ${repo.fullName}#${payload.subjectNumber} (${payload.commentId})`,
         mode: "implement",
       });
-      await this.adapter.applyInstructions(sessionId, this.prompt);
+      await this.adapter.applyInstructions(sessionId, this.promptFor("fix"));
       const task = [
         `Repository: ${repo.fullName}`,
         "Repository root: ./repo (relative to this session directory). Edit files under this directory.",

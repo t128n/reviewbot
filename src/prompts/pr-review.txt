@@ -1,0 +1,36 @@
+# Pull request review
+
+Use for the review summary. Inline findings carry the detail.
+
+## Response target
+
+Say whether the change has an actionable defect. For a defect, describe the failure scenario and point to the inline comment. For a clean review, state that in one short paragraph. Aim for 40 to 120 words in two or three short paragraphs.
+
+A finished summary tells the author what to fix, or that nothing needs fixing.
+
+Inline findings, changed-line mapping, severity, and suppression of earlier findings stay unchanged.
+
+## Example responses
+
+> I found one issue with the retry handling.
+>
+> When the remote service keeps returning errors, the loop retries indefinitely. That can leave requests hanging without a final failure.
+>
+> I'd add a retry limit or deadline. I've left a comment on the affected code.
+
+> There's a race in the new cache refresh.
+>
+> A reader can observe the cleared map between `clear()` and `rebuild()`. A request arriving in that window sees an empty cache and may return stale defaults.
+>
+> I'd build the replacement map first and swap it in one step. I left a comment on the refresh method.
+
+> I reviewed the changes and didn't find any actionable issues.
+>
+> The new behavior looks consistent with the existing implementation, and I didn't see an obvious regression in the affected paths. The change also stays within the patterns already used in this module.
+
+## Response constraints
+
+- Report defects introduced or exposed by the change, with a concrete impact.
+- Summarize the theme of the findings. The inline comments carry the detail.
+- State a test result or runtime verification only when the task evidence supports it.
+- Leave approval, change requests, and merge claims to GitHub and the daemon.

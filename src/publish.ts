@@ -26,6 +26,7 @@ import {
   withMarker,
   type ReviewResult,
 } from "./schemas.ts";
+import { LABEL_DEFINITIONS } from "./duplicates.ts";
 
 export class PublishError extends Error {
   readonly permanent: boolean;
@@ -47,22 +48,31 @@ export type PublicationOutcome =
   | { status: "duplicate"; id: number | null }
   | { status: "skipped"; reason: string };
 
+export interface DuplicatePublication {
+  status: "published" | "duplicate";
+  id: number;
+  createdAt: string;
+}
+
 export class Publisher {
   private readonly store: Store;
   private readonly github: GitHub;
   private readonly logger: Logger;
   private readonly botLogin: string;
+  private readonly clock: () => string;
 
   constructor(options: {
     store: Store;
     github: GitHub;
     logger: Logger;
     botLogin: string;
+    clock?: () => string;
   }) {
     this.store = options.store;
     this.github = options.github;
     this.logger = options.logger;
     this.botLogin = options.botLogin;
+    this.clock = options.clock ?? (() => new Date().toISOString());
   }
 
   private async writeClient(
@@ -413,8 +423,242 @@ export class Publisher {
     return { status: "published", id };
   }
 
-  async publishFixFailure(input: {
+  /**
+   * Publish one duplicate notice per revision. The case intent exists before
+   * this call, and the marker makes retries and crash recovery idempotent.
+   */
+  async publishDuplicateNotice(input: {
     repo: RepositoryRecord;
+    issueNumber: number;
+    body: string;
+    marker: string;
+  }): Promise<DuplicatePublication> {
+    return this.publishDuplicateComment({
+      ...input,
+      kind: "duplicate-notice",
+    });
+  }
+
+  /**
+   * Publish a lifecycle comment with a stable marker. Returns the GitHub
+   * timestamp so the caller can arm a deadline only after confirmation.
+   */
+  async publishDuplicateComment(input: {
+    repo: RepositoryRecord;
+    issueNumber: number;
+    body: string;
+    marker: string;
+    kind: string;
+    requireOpen?: boolean;
+  }): Promise<DuplicatePublication> {
+    assertNoCredentialMaterial(input.body);
+    const octokit = await this.writeClient(input.repo);
+    const issue = await this.github.getIssue(
+      octokit,
+      input.repo.owner,
+      input.repo.name,
+      input.issueNumber,
+    );
+    if (input.requireOpen !== false && issue.state !== "open") {
+      throw new PublishError(
+        `Issue #${input.issueNumber} is ${issue.state}; the duplicate comment was not published`,
+        true,
+      );
+    }
+    const body = withMarker(
+      limitBody(sanitizeModelText(input.body)),
+      input.marker,
+    );
+    const existing = await this.github.listIssueCommentsForMarker(
+      octokit,
+      input.repo.owner,
+      input.repo.name,
+      input.issueNumber,
+    );
+    const already = findByMarker(existing, input.marker, this.botLogin);
+    if (already) {
+      const original = existing.find((comment) => comment.id === already);
+      this.store.recordPublication({
+        marker: input.marker,
+        repoId: input.repo.id,
+        kind: input.kind,
+        githubId: already,
+      });
+      return {
+        status: "duplicate",
+        id: already,
+        createdAt: original?.createdAt || this.clock(),
+      };
+    }
+    const created = await this.github.createIssueCommentWithMetadata(
+      octokit,
+      input.repo.owner,
+      input.repo.name,
+      input.issueNumber,
+      body,
+    );
+    this.store.recordPublication({
+      marker: input.marker,
+      repoId: input.repo.id,
+      kind: input.kind,
+      githubId: created.id,
+    });
+    return { status: "published", id: created.id, createdAt: created.createdAt };
+  }
+
+  async closeAsDuplicate(input: {
+    repo: RepositoryRecord;
+    issueNumber: number;
+  }): Promise<void> {
+    const octokit = await this.writeClient(input.repo);
+    await this.github.closeIssueAsDuplicate(
+      octokit,
+      input.repo.owner,
+      input.repo.name,
+      input.issueNumber,
+    );
+  }
+
+  async reopenIssue(input: {
+    repo: RepositoryRecord;
+    issueNumber: number;
+  }): Promise<void> {
+    const octokit = await this.writeClient(input.repo);
+    await this.github.reopenIssue(
+      octokit,
+      input.repo.owner,
+      input.repo.name,
+      input.issueNumber,
+    );
+  }
+
+  /**
+   * Add only the fixed duplicate labels, creating them when absent. Label
+   * failure is reported to the caller and must not block the issue workflow.
+   */
+  async addManagedLabels(input: {
+    repo: RepositoryRecord;
+    issueNumber: number;
+    labels: string[];
+  }): Promise<{ applied: string[]; error: string | null }> {
+    const applied: string[] = [];
+    try {
+      const octokit = await this.writeClient(input.repo);
+      const issue = await this.github.getIssue(
+        octokit,
+        input.repo.owner,
+        input.repo.name,
+        input.issueNumber,
+      );
+      const before = new Set(issue.labels);
+      const existing = new Set(
+        await this.github.listRepositoryLabels(
+          octokit,
+          input.repo.owner,
+          input.repo.name,
+        ),
+      );
+      for (const label of input.labels) {
+        const definition = LABEL_DEFINITIONS[label];
+        if (!definition) continue;
+        if (!existing.has(label)) {
+          await this.github.createLabel(
+            octokit,
+            input.repo.owner,
+            input.repo.name,
+            { name: label, ...definition },
+          );
+          existing.add(label);
+        }
+      }
+      const available = input.labels.filter((label) => existing.has(label));
+      if (available.length > 0) {
+        await this.github.addIssueLabels(
+          octokit,
+          input.repo.owner,
+          input.repo.name,
+          input.issueNumber,
+          available,
+        );
+        applied.push(...available.filter((label) => !before.has(label)));
+        if (applied.length > 0) {
+          this.store.addDuplicateAppliedLabels(
+            input.repo.id,
+            input.issueNumber,
+            applied,
+          );
+        }
+      }
+      return { applied, error: null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        {
+          repo: input.repo.fullName,
+          issue: input.issueNumber,
+          labels: input.labels,
+          error: message,
+        },
+        "duplicate labels could not be applied; continuing the issue workflow",
+      );
+      return { applied, error: message };
+    }
+  }
+
+  /** Remove only labels recorded as Reviewbot-applied. */
+  async removeManagedLabels(input: {
+    repo: RepositoryRecord;
+    issueNumber: number;
+    labels: string[];
+  }): Promise<{ removed: string[]; error: string | null }> {
+    const removed: string[] = [];
+    try {
+      const octokit = await this.writeClient(input.repo);
+      for (const label of input.labels) {
+        if (!LABEL_DEFINITIONS[label]) continue;
+        await this.github.removeIssueLabel(
+          octokit,
+          input.repo.owner,
+          input.repo.name,
+          input.issueNumber,
+          label,
+        );
+        removed.push(label);
+      }
+      if (removed.length > 0) {
+        const record = this.store.getDuplicateCase(
+          input.repo.id,
+          input.issueNumber,
+        );
+        if (record) {
+          this.store.updateDuplicateCase(
+            input.repo.id,
+            input.issueNumber,
+            {
+              botAppliedLabels: record.botAppliedLabels.filter(
+                (label) => !removed.includes(label),
+              ),
+            },
+          );
+        }
+      }
+      return { removed, error: null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        {
+          repo: input.repo.fullName,
+          issue: input.issueNumber,
+          labels: input.labels,
+          error: message,
+        },
+        "duplicate labels could not be removed",
+      );
+      return { removed, error: message };
+    }
+  }
+
+  async publishFixFailure(input: {    repo: RepositoryRecord;
     payload: FixPayload;
     message: string;
   }): Promise<void> {

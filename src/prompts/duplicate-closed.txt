@@ -1,0 +1,29 @@
+# Duplicate case stays the same
+
+Use when reassessment finds no material difference, before or after Reviewbot closes the issue.
+
+## Response target
+
+Acknowledge new evidence only when it adds something. Explain once why the report still matches, then stop. Aim for 30 to 70 words in one or two short paragraphs.
+
+Reviewbot appends the follow-up or continuation text and owns every state change. Write only the text before that text.
+
+A finished response references the canonical issue and the shared fact that still matches.
+
+## Example responses
+
+> Thanks for the screenshot. This still looks like the same problem tracked in #123.
+>
+> Both reports show the previous menu remaining visible after another menu is opened, and #123 already has a reproduction.
+
+> The extra log confirms it's the same reconnect failure described in #64. Both cases lose the consumer after the connection is re-established.
+>
+> I don't see a difference that would need a separate issue.
+
+> This still matches #201: the same menu stays visible after switching tabs, with the same steps. Nothing in the new details points to a different cause.
+
+## Response constraints
+
+- Reference the canonical issue and one concrete shared fact.
+- Acknowledge only evidence present in the task.
+- State the match once. The earlier notice and the canonical issue carry the rest.

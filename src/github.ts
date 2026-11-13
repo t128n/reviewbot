@@ -50,6 +50,8 @@ export interface IssueSummary {
   updatedAt: string;
   isPullRequest: boolean;
   state: string;
+  stateReason: string | null;
+  labels: string[];
   htmlUrl: string;
 }
 
@@ -372,13 +374,160 @@ export class GitHub {
     return (response.data as Array<Record<string, unknown>>).map(mapIssue);
   }
 
+  /**
+   * Bounded GitHub issue search used only for duplicate discovery. The query is
+   * constructed by Reviewbot from issue text; callers must keep it scoped to
+   * the installed repository.
+   */
+  async searchIssues(
+    octokit: GitHubClient,
+    query: string,
+    perPage = 10,
+  ): Promise<IssueSummary[]> {
+    const data = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      octokit,
+      "GET /search/issues",
+      {
+        q: query,
+        per_page: Math.min(20, Math.max(1, perPage)),
+        sort: "updated",
+        order: "desc",
+      },
+    );
+    return (data.items ?? []).map(mapIssue);
+  }
+
+  /** First page of comments for a candidate issue, bounded for discovery. */
+  async listIssueCommentsLimited(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    number: number,
+    perPage = 20,
+  ): Promise<CommentSummary[]> {
+    const data = await this.request<Array<Record<string, unknown>>>(
+      octokit,
+      "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      {
+        owner,
+        repo,
+        issue_number: number,
+        per_page: Math.min(100, Math.max(1, perPage)),
+        page: 1,
+      },
+    );
+    return data.map((item) => mapComment(item, true));
+  }
+
+  async listRepositoryLabels(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+  ): Promise<string[]> {
+    const data = await paginate<Record<string, unknown>>(
+      octokit,
+      "GET /repos/{owner}/{repo}/labels",
+      { owner, repo },
+      10,
+    );
+    return data
+      .map((label) => (typeof label.name === "string" ? label.name : ""))
+      .filter((name) => name.length > 0);
+  }
+
+  async createLabel(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    input: { name: string; color: string; description: string },
+  ): Promise<void> {
+    await this.request(octokit, "POST /repos/{owner}/{repo}/labels", {
+      owner,
+      repo,
+      name: input.name,
+      color: input.color,
+      description: input.description,
+    });
+  }
+
+  /** Add labels without replacing any label that is already present. */
+  async addIssueLabels(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    number: number,
+    labels: string[],
+  ): Promise<void> {
+    if (labels.length === 0) return;
+    await this.request(
+      octokit,
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/labels",
+      { owner, repo, issue_number: number, labels },
+    );
+  }
+
+  async removeIssueLabel(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    number: number,
+    label: string,
+  ): Promise<void> {
+    try {
+      await this.request(
+        octokit,
+        "DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
+        { owner, repo, issue_number: number, name: label },
+      );
+    } catch (error) {
+      const classified = classifyGitHubError(error);
+      if (classified.status === 404) return;
+      throw classified;
+    }
+  }
+
+  /**
+   * Close with GitHub's duplicate state reason. Reviewbot never falls back to a
+   * plain close: the state reason is the authoritative closure record.
+   */
+  async closeIssueAsDuplicate(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<void> {
+    await this.request(
+      octokit,
+      "PATCH /repos/{owner}/{repo}/issues/{issue_number}",
+      {
+        owner,
+        repo,
+        issue_number: number,
+        state: "closed",
+        state_reason: "duplicate",
+      },
+    );
+  }
+
+  async reopenIssue(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<void> {
+    await this.request(
+      octokit,
+      "PATCH /repos/{owner}/{repo}/issues/{issue_number}",
+      { owner, repo, issue_number: number, state: "open" },
+    );
+  }
+
   async listIssueComments(
     octokit: GitHubClient,
     owner: string,
     repo: string,
     since: string,
-  ): Promise<CommentSummary[]> {
-    const data = await paginate<Record<string, unknown>>(
+  ): Promise<CommentSummary[]> {    const data = await paginate<Record<string, unknown>>(
       octokit,
       "GET /repos/{owner}/{repo}/issues/comments",
       { owner, repo, sort: "updated", direction: "asc", since },
@@ -476,6 +625,28 @@ export class GitHub {
       { owner, repo, issue_number: number, body },
     );
     return data.id;
+  }
+
+  /** Create a comment and return GitHub's authoritative publication timestamp. */
+  async createIssueCommentWithMetadata(
+    octokit: GitHubClient,
+    owner: string,
+    repo: string,
+    number: number,
+    body: string,
+  ): Promise<{ id: number; createdAt: string }> {
+    const data = await this.request<{ id: number; created_at?: string }>(
+      octokit,
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      { owner, repo, issue_number: number, body },
+    );
+    return {
+      id: data.id,
+      createdAt:
+        typeof data.created_at === "string"
+          ? data.created_at
+          : new Date().toISOString(),
+    };
   }
 
   async createReview(
@@ -782,8 +953,25 @@ function mapIssue(item: Record<string, unknown>): IssueSummary {
     updatedAt: String(item.updated_at ?? ""),
     isPullRequest: Boolean(item.pull_request),
     state: String(item.state ?? "open"),
+    stateReason:
+      typeof item.state_reason === "string" ? item.state_reason : null,
+    labels: mapLabels(item.labels),
     htmlUrl: String(item.html_url ?? ""),
   };
+}
+
+function mapLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((label) => {
+      if (typeof label === "string") return label;
+      if (label && typeof label === "object") {
+        const name = (label as Record<string, unknown>).name;
+        return typeof name === "string" ? name : "";
+      }
+      return "";
+    })
+    .filter((name) => name.length > 0);
 }
 
 function mapPull(item: Record<string, unknown>): PullSummary {

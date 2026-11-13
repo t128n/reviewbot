@@ -232,6 +232,141 @@ describe("job lifecycle", () => {
   });
 });
 
+describe("duplicate cases", () => {
+  test("persists an intent, arms a deadline, and records label provenance", () => {
+    const store = new Store(":memory:");
+    const repoId = repo(store);
+    const created = store.createDuplicateCase({
+      repoId,
+      issueNumber: 2,
+      canonicalIssueNumber: 1,
+      classification: "likely",
+      lastDecisionReference: '{"noticeComment":"notice"}',
+    });
+    expect(created.status).toBe("notice_pending");
+    expect(created.dueAt).toBeNull();
+    expect(store.listDueDuplicateCases(addSeconds(nowIso(), 48 * 3600))).toEqual(
+      [],
+    );
+    store.updateDuplicateCase(repoId, 2, {
+      status: "pending",
+      noticeCommentId: 55,
+      noticePostedAt: "2026-01-01T00:00:00.000Z",
+      dueAt: "2026-01-02T00:00:00.000Z",
+      lastCheckedCommentId: 10,
+    });
+    expect(
+      store.listDueDuplicateCases("2026-01-02T00:00:01.000Z").map(
+        (record) => record.issueNumber,
+      ),
+    ).toEqual([2]);
+    store.addDuplicateAppliedLabels(repoId, 2, ["pending close"]);
+    store.addDuplicateAppliedLabels(repoId, 2, ["pending close", "duplicate"]);
+    expect(store.getDuplicateCase(repoId, 2)!.botAppliedLabels).toEqual([
+      "pending close",
+      "duplicate",
+    ]);
+    store.updateDuplicateCase(repoId, 2, {
+      status: "closed",
+      botClosed: true,
+      botAppliedLabels: ["duplicate"],
+    });
+    const closed = store.getDuplicateCase(repoId, 2)!;
+    expect(closed.status).toBe("closed");
+    expect(closed.botClosed).toBe(true);
+    expect(closed.lastCheckedCommentId).toBe(10);
+    expect(store.duplicateCaseCounts().closed).toBe(1);
+    store.close();
+  });
+
+  test("never overwrites an existing lifecycle intent", () => {
+    const store = new Store(":memory:");
+    const repoId = repo(store);
+    store.createDuplicateCase({
+      repoId,
+      issueNumber: 3,
+      canonicalIssueNumber: 1,
+      classification: "confirmed",
+      lastDecisionReference: "first",
+    });
+    store.updateDuplicateCase(repoId, 3, { status: "cancelled" });
+    const second = store.createDuplicateCase({
+      repoId,
+      issueNumber: 3,
+      canonicalIssueNumber: 2,
+      classification: "likely",
+      lastDecisionReference: "second",
+    });
+    expect(second.status).toBe("cancelled");
+    expect(second.canonicalIssueNumber).toBe(1);
+    expect(second.lastDecisionReference).toBe("first");
+    store.close();
+  });
+
+  test("backs off failed deadline checks and stops automatic retries", () => {
+    const store = new Store(":memory:");
+    const repoId = repo(store);
+    store.createDuplicateCase({
+      repoId,
+      issueNumber: 4,
+      canonicalIssueNumber: 1,
+      classification: "confirmed",
+      lastDecisionReference: "{}",
+    });
+    store.updateDuplicateCase(repoId, 4, {
+      status: "pending",
+      dueAt: "2026-01-01T00:00:00.000Z",
+    });
+    const now = "2026-01-02T00:00:00.000Z";
+    expect(store.listDueDuplicateCases(now)).toHaveLength(1);
+    store.markDuplicateCheckFailure(repoId, 4, "GitHub 502", now);
+    let record = store.getDuplicateCase(repoId, 4)!;
+    expect(record.attempts).toBe(1);
+    expect(record.nextAttemptAt).toBe(addSeconds(now, 60));
+    expect(store.listDueDuplicateCases(now)).toHaveLength(0);
+    store.markDuplicateCheckFailure(
+      repoId,
+      4,
+      "GitHub 502",
+      addSeconds(now, 120),
+    );
+    store.markDuplicateCheckFailure(
+      repoId,
+      4,
+      "GitHub 502",
+      addSeconds(now, 3600),
+    );
+    expect(store.getDuplicateCase(repoId, 4)!.attempts).toBe(3);
+    expect(
+      store.listDueDuplicateCases(addSeconds(now, 7 * 24 * 3600)),
+    ).toHaveLength(0);
+    store.markDuplicateCheckSuccess(repoId, 4);
+    record = store.getDuplicateCase(repoId, 4)!;
+    expect(record.attempts).toBe(0);
+    expect(record.nextAttemptAt).toBeNull();
+    expect(store.listDueDuplicateCases(addSeconds(now, 7 * 24 * 3600))).toHaveLength(
+      1,
+    );
+    store.close();
+  });
+
+  test("detects a permanently failed stable job key", () => {
+    const store = new Store(":memory:");
+    const repoId = repo(store);
+    store.enqueueJob({
+      key: "duplicate-comment:1:9",
+      kind: "duplicate-comment",
+      repoId,
+      payload: {},
+    });
+    const job = store.claimNextJob()!;
+    store.failJob(job.id, "permanent", { retryable: false });
+    expect(store.hasFailedJob("duplicate-comment:1:9")).toBe(true);
+    expect(store.hasFailedJob("duplicate-comment:1:10")).toBe(false);
+    store.close();
+  });
+});
+
 describe("observation and idempotency state", () => {
   test("tracks pull heads and reviewed commits", () => {
     const store = new Store(":memory:");

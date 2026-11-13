@@ -10,16 +10,21 @@ import type { RepositoryRecord, Store } from "./db.ts";
 import { addSeconds, nowIso } from "./db.ts";
 import {
   conversationKey,
+  duplicateCommentKey,
+  duplicateDueKey,
   fixKey,
   reviewKey,
   triageKey,
   truncateBody,
   type ConversationPayload,
+  type DuplicateCommentPayload,
+  type DuplicateDuePayload,
   type FixPayload,
   type ReviewPayload,
   type TriagePayload,
 } from "./jobs.ts";
-import { hasMention, isFixRequest, stripMention } from "./mentions.ts";
+import { hasCommand, isFixRequest, stripCommand } from "./commands.ts";
+import { isMaintainerOverride, isSubstantiveComment } from "./duplicates.ts";
 import type { Logger } from "./log.ts";
 
 const OVERLAP_SECONDS = 120;
@@ -245,20 +250,38 @@ export class Poller {
       for (const comment of comments) {
         if (this.isSelf(comment.author, comment.authorType)) continue;
         if (!isAfter(comment.createdAt, repo.initializedAt)) continue;
-        if (!hasMention(comment.body, this.botSlug)) continue;
         if (comment.issueNumber == null) continue;
-        enqueued += await this.handleMentionSafely(
+        let commentEnqueued = 0;
+        if (hasCommand(comment.body)) {
+          const commandEnqueued = await this.handleCommandSafely(
+            repo,
+            octokit,
+            comment,
+            "issue",
+            comment.issueNumber,
+          );
+          commentEnqueued += commandEnqueued;
+        }
+        commentEnqueued += await this.handleDuplicateCommentSafely(
           repo,
           octokit,
           comment,
-          "issue",
           comment.issueNumber,
         );
+        enqueued += commentEnqueued;
       }
       this.store.setCursor(repo.id, "comments", pollStart);
     } catch (error) {
       sourceFailed = true;
       this.handleSourceError(repo, "comments", error);
+    }
+
+    // Duplicate lifecycle deadlines and interrupted notice intents.
+    try {
+      enqueued += this.pollDuplicateCases(repo);
+    } catch (error) {
+      sourceFailed = true;
+      this.handleSourceError(repo, "duplicates", error);
     }
 
     // Inline review comments and replies.
@@ -272,9 +295,9 @@ export class Poller {
       for (const comment of comments) {
         if (this.isSelf(comment.author, comment.authorType)) continue;
         if (!isAfter(comment.createdAt, repo.initializedAt)) continue;
-        if (!hasMention(comment.body, this.botSlug)) continue;
+        if (!hasCommand(comment.body)) continue;
         if (comment.issueNumber == null) continue;
-        enqueued += await this.handleMentionSafely(
+        enqueued += await this.handleCommandSafely(
           repo,
           octokit,
           comment,
@@ -374,7 +397,177 @@ export class Poller {
     return 0;
   }
 
-  private async handleMentionSafely(
+  /** Enqueue due deadlines and reconcile unconfirmed notice intents. */
+  private pollDuplicateCases(repo: RepositoryRecord): number {
+    let enqueued = 0;
+    for (const record of this.store.listNoticePendingDuplicateCases(repo.id)) {
+      const stamp = `notice:${record.updatedAt}`;
+      const payload: DuplicateDuePayload = {
+        owner: repo.owner,
+        repo: repo.name,
+        installationId: repo.installationId,
+        issueNumber: record.issueNumber,
+        dueAt: stamp,
+      };
+      if (
+        this.store.enqueueJob({
+          key: duplicateDueKey(repo.id, record.issueNumber, stamp),
+          kind: "duplicate-due",
+          repoId: repo.id,
+          payload,
+        })
+      ) {
+        enqueued += 1;
+        this.logger.info(
+          { repo: repo.fullName, issue: record.issueNumber },
+          "queued duplicate notice reconciliation",
+        );
+      }
+    }
+    for (const record of this.store.listDueDuplicateCases(nowIso(), repo.id)) {
+      if (!record.dueAt) continue;
+      const payload: DuplicateDuePayload = {
+        owner: repo.owner,
+        repo: repo.name,
+        installationId: repo.installationId,
+        issueNumber: record.issueNumber,
+        dueAt: record.dueAt,
+      };
+      if (
+        this.store.enqueueJob({
+          key: duplicateDueKey(repo.id, record.issueNumber, record.dueAt),
+          kind: "duplicate-due",
+          repoId: repo.id,
+          payload,
+        })
+      ) {
+        enqueued += 1;
+        this.logger.info(
+          { repo: repo.fullName, issue: record.issueNumber, dueAt: record.dueAt },
+          "queued duplicate closure check",
+        );
+      }
+    }
+    return enqueued;
+  }
+
+  private async handleDuplicateCommentSafely(
+    repo: RepositoryRecord,
+    octokit: GitHubClient,
+    comment: CommentSummary,
+    issueNumber: number,
+  ): Promise<number> {
+    try {
+      return await this.handleDuplicateComment(
+        repo,
+        octokit,
+        comment,
+        issueNumber,
+      );
+    } catch (error) {
+      const candidate = error as { retryable?: boolean; rateLimited?: boolean };
+      if (candidate.rateLimited || candidate.retryable) throw error;
+      this.logger.warn(
+        {
+          repo: repo.fullName,
+          comment: comment.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "skipping an unprocessable duplicate follow-up",
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * Duplicate-only follow-up monitoring. A substantive comment from the
+   * reporter or a write-access collaborator can trigger reassessment without an
+   * explicit command; it never grants execution authority.
+   */
+  private async handleDuplicateComment(
+    repo: RepositoryRecord,
+    octokit: GitHubClient,
+    comment: CommentSummary,
+    issueNumber: number,
+  ): Promise<number> {
+    const record = this.store.getDuplicateCase(repo.id, issueNumber);
+    if (!record) return 0;
+    if (record.status !== "pending" && record.status !== "closed") return 0;
+    if (!record.noticePostedAt) return 0;
+    if (record.lastCheckedCommentId != null && comment.id <= record.lastCheckedCommentId) {
+      return 0;
+    }
+    if (Date.parse(comment.createdAt) < Date.parse(record.noticePostedAt)) {
+      return 0;
+    }
+    if (
+      !isSubstantiveComment(comment.body) &&
+      !isMaintainerOverride(comment.body)
+    ) {
+      return 0;
+    }
+    const issue = await this.github.getIssue(
+      octokit,
+      repo.owner,
+      repo.name,
+      issueNumber,
+    );
+    if (issue.isPullRequest) return 0;
+    if (comment.author !== issue.author) {
+      const permission = await this.github.repositoryPermission(
+        octokit,
+        repo.owner,
+        repo.name,
+        comment.author,
+      );
+      if (!canWriteRepository(permission.permission)) {
+        this.logger.info(
+          {
+            repo: repo.fullName,
+            issue: issueNumber,
+            author: comment.author,
+            permission: permission.permission,
+          },
+          "duplicate follow-up ignored: commenter is not the reporter or a collaborator",
+        );
+        return 0;
+      }
+    }
+    const payload: DuplicateCommentPayload = {
+      owner: repo.owner,
+      repo: repo.name,
+      installationId: repo.installationId,
+      issueNumber,
+      commentId: comment.id,
+      author: comment.author,
+      body: truncateBody(comment.body),
+      createdAt: comment.createdAt,
+    };
+    const key = duplicateCommentKey(repo.id, comment.id);
+    if (this.store.hasFailedJob(key)) {
+      this.logger.debug(
+        { repo: repo.fullName, issue: issueNumber, comment: comment.id },
+        "duplicate reassessment already failed permanently for this comment",
+      );
+      return 0;
+    }
+    const inserted = this.store.enqueueJob({
+      key,
+      kind: "duplicate-comment",
+      repoId: repo.id,
+      payload,
+    });
+    if (inserted) {
+      this.logger.info(
+        { repo: repo.fullName, issue: issueNumber, comment: comment.id },
+        "queued duplicate reassessment",
+      );
+      return 1;
+    }
+    return 0;
+  }
+
+  private async handleCommandSafely(
     repo: RepositoryRecord,
     octokit: GitHubClient,
     comment: CommentSummary,
@@ -382,7 +575,7 @@ export class Poller {
     subjectNumber: number,
   ): Promise<number> {
     try {
-      return await this.handleMention(
+      return await this.handleCommand(
         repo,
         octokit,
         comment,
@@ -398,13 +591,13 @@ export class Poller {
           comment: comment.id,
           error: error instanceof Error ? error.message : String(error),
         },
-        "skipping an unprocessable mention; checkpoint will advance",
+        "skipping an unprocessable command; checkpoint will advance",
       );
       return 0;
     }
   }
 
-  private async handleMention(
+  private async handleCommand(
     repo: RepositoryRecord,
     octokit: GitHubClient,
     comment: CommentSummary,
@@ -424,14 +617,14 @@ export class Poller {
           author: comment.author,
           permission: permission.permission,
         },
-        "mention denied: requester lacks write access",
+        "command denied: requester lacks write access",
       );
       return 0;
     }
 
     const subjectType = await this.subjectType(repo, octokit, channel, subjectNumber);
     const title = await this.subjectTitle(repo, octokit, subjectType, subjectNumber);
-    const instruction = stripMention(comment.body, this.botSlug);
+    const instruction = stripCommand(comment.body);
     if (isFixRequest(instruction)) {
       const payload: FixPayload = {
         owner: repo.owner,

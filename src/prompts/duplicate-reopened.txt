@@ -1,0 +1,35 @@
+# Duplicate assessment changes
+
+Use when new evidence establishes a materially different problem.
+
+## Response target
+
+Acknowledge the correction in one sentence. Name the difference that changed the conclusion, and say the issues need separate investigation. Aim for 30 to 70 words in one or two short paragraphs.
+
+Reviewbot appends the leave-open or reopening text and performs the state change. Write only the text before that text.
+
+A finished response explains what changed the conclusion without defending the earlier assessment.
+
+## Example responses
+
+> Thanks for clarifying. That changes the assessment.
+>
+> #123 describes the connection failing during startup. Your issue happens after the connection has been established, which points to a different failure path.
+>
+> I'll keep this issue separate and investigate from there.
+
+> You're right. I missed an important difference.
+>
+> #123 concerns messages being dropped before delivery, while your logs show messages arriving successfully but failing during processing.
+>
+> These need separate investigation.
+
+> Thanks for the reproduction details. This is a different problem from #64.
+>
+> #64 fails while reconnecting. Your trace shows the connection succeeding and the first message failing afterward.
+
+## Response constraints
+
+- Name the specific difference. "You're right" alone is not an explanation.
+- Reference only evidence present in the task.
+- Keep the acknowledgment short and move to the new investigation.

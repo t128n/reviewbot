@@ -5,7 +5,7 @@
 ## Context
 
 Reviewbot must discover issues, PRs, PR head changes, draft transitions, conversation
-comments, inline review comments, and mentions without webhooks. Discovery must not miss
+comments, inline review comments, and command requests without webhooks. Discovery must not miss
 events when pagination or API calls fail, must not retroactively process history, and must
 not create loops from its own activity.
 

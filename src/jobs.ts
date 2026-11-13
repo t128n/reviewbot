@@ -51,16 +51,39 @@ export const FixPayloadSchema = v.object({
   title: v.string(),
 });
 
+export const DuplicateDuePayloadSchema = v.object({
+  ...RepoFields,
+  issueNumber: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  dueAt: v.pipe(v.string(), v.minLength(1)),
+});
+
+export const DuplicateCommentPayloadSchema = v.object({
+  ...RepoFields,
+  issueNumber: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  commentId: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  author: v.string(),
+  body: v.string(),
+  createdAt: v.string(),
+});
+
 export type TriagePayload = v.InferOutput<typeof TriagePayloadSchema>;
 export type ReviewPayload = v.InferOutput<typeof ReviewPayloadSchema>;
 export type ConversationPayload = v.InferOutput<typeof ConversationPayloadSchema>;
 export type FixPayload = v.InferOutput<typeof FixPayloadSchema>;
+export type DuplicateDuePayload = v.InferOutput<
+  typeof DuplicateDuePayloadSchema
+>;
+export type DuplicateCommentPayload = v.InferOutput<
+  typeof DuplicateCommentPayloadSchema
+>;
 
 export type JobPayload =
   | TriagePayload
   | ReviewPayload
   | ConversationPayload
-  | FixPayload;
+  | FixPayload
+  | DuplicateDuePayload
+  | DuplicateCommentPayload;
 
 export function triageKey(repoId: number, issueNumber: number): string {
   return `triage:${repoId}:${issueNumber}`;
@@ -80,6 +103,18 @@ export function conversationKey(repoId: number, commentId: number): string {
 
 export function fixKey(repoId: number, commentId: number): string {
   return `fix:${repoId}:${commentId}`;
+}
+
+export function duplicateDueKey(
+  repoId: number,
+  issueNumber: number,
+  dueAt: string,
+): string {
+  return `duplicate-due:${repoId}:${issueNumber}:${dueAt}`;
+}
+
+export function duplicateCommentKey(repoId: number, commentId: number): string {
+  return `duplicate-comment:${repoId}:${commentId}`;
 }
 
 export function truncateBody(body: string): string {

@@ -1,0 +1,35 @@
+# Issue investigation
+
+Use for an independent issue or a related issue when you have a technical finding to report.
+
+## Response target
+
+Lead with the likely explanation or conclusion. Explain the mechanism with the evidence that supports it, and propose the smallest next step. Aim for 80 to 200 words in two to four short paragraphs. A complex investigation can run longer when the evidence supports a consequential conclusion.
+
+A finished response answers three questions: what is happening, why, and what to do next. Drop everything else.
+
+## Example responses
+
+> I found something that might explain this.
+>
+> The reconnect handler updates the connection state and emits the connected event, but it doesn't restart the message consumer. That would explain why the connection stays active while messages stop arriving.
+>
+> I'd check whether the consumer restarts after a successful reconnect. The initial connection path starts it, so a missing restart on reconnect would cover both the manual and automatic cases. I haven't reproduced it yet, but the gap is visible in the handler.
+
+> This looks related to #123, but I don't think it's the same bug.
+>
+> #123 concerns the connection dropping after a network interruption. Here, the connection stays active, but messages stop being processed. Both paths use the same consumer, so the shared code is worth checking. The trigger and the resulting state are different.
+>
+> I'll keep this issue separate for now. The reconnect handling is the first place to look.
+
+> The timeout comes from `fetchWithRetry`. It starts the deadline before the request enters the retry queue. Time spent waiting for a slot then counts against the next attempt. Under load, the final attempt can start with almost no time left and fail immediately.
+>
+> I'd start the deadline inside each attempt, or pass the remaining budget explicitly. The current tests only cover an immediate failure, so they wouldn't catch this.
+
+## Response constraints
+
+- Cite the component, symbol, or behavior that carries the conclusion.
+- Separate verified facts from inferences.
+- Mention an adjacent finding only when it changes the next action.
+- State a reproduction, test result, or fix only when the task evidence supports it.
+- Ask a question only when the answer changes the next action.

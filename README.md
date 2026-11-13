@@ -11,9 +11,9 @@ It is an integration layer, not an agent platform:
 - **Reviewbot** owns authentication, discovery, authorization, durable jobs, task dispatch,
   validation, and publication.
 
-The authoritative product specification is [`docs/specs/v1.0.md`](docs/specs/v1.0.md).
-Implementation plans and architectural decisions live in [`docs/plans`](docs/plans) and
-[`docs/adr`](docs/adr).
+The authoritative product specification is [`docs/specs/v1.1.md`](docs/specs/v1.1.md),
+which extends the implemented [`v1.0`](docs/specs/v1.0.md) baseline. Implementation plans and
+architectural decisions live in [`docs/plans`](docs/plans) and [`docs/adr`](docs/adr).
 
 ## Requirements
 
@@ -120,16 +120,22 @@ Windows. Installation tokens are never persisted.
 
 | Trigger | Action |
 | --- | --- |
-| New issue | One evidence-based triage comment |
+| New issue | One decision-first triage comment, including bounded duplicate discovery |
 | New non-draft PR | One review with inline findings when they map to changed lines |
 | New commits on a non-draft PR | Incremental review of changes since the last reviewed commit |
 | Draft PR becomes ready | Initial review |
-| Authorized mention | Conversational reply, or a draft PR for an explicit change request |
+| Authorized `/rb` command | Conversational reply, or a draft PR for an explicit change request |
+| Reporter or write-access follow-up on an active duplicate case | Duplicate-only reassessment without a command |
+| Duplicate deadline reached | Recheck and close, renew, or cancel the duplicate case |
 | Bot's own events | Ignored |
 | Title/body/label edits | Ignored |
 
-Triage does not modify code, labels, assignees, milestones, projects, or issue state.
-Subsequent responses require an authorized mention.
+Start a command with `/rb` at the beginning of a comment or after whitespace, for example `/rb can you investigate this?`. The old `@reviewbot` mention and path fragments such as `src/rb` do not trigger work.
+
+Automatic triage does not modify code, assignees, milestones, or projects. It may change only
+the two duplicate labels and the duplicate lifecycle described below. Other issue state changes
+are limited to closing a verified duplicate after 24 hours and reopening only a duplicate that
+Reviewbot closed. Subsequent general responses still require an authorized `/rb` command.
 
 Polling runs every 60 seconds with bounded overlapping windows and independent checkpoints
 for issues, PRs, issue comments, and inline review comments. The open-PR list uses ETag
@@ -145,6 +151,48 @@ Explicit tasks require repository `write`, `maintain`, or `admin` permission, ch
 through GitHub's repository permission API at enqueue time, before fix execution, and again
 immediately before publication. Unknown or insufficient permissions deny execution.
 Automatic triage and reviews apply regardless of the contributor's permission level.
+
+### Duplicate lifecycle
+
+New-issue triage resolves explicit issue references and inspects a bounded set of existing
+issues (at most three searches and 20 retrieved candidates, plus direct references). The
+model proposes `confirmed_duplicate`, `likely_duplicate`, `related`, or `independent`. The
+daemon then verifies the canonical issue: it must exist in the same repository, must not be
+the current issue or a pull request, and chains resolve to the original with cycle and depth
+guards. Model output is advisory; only the daemon can authorize a lifecycle transition.
+
+For a verified duplicate, Reviewbot publishes one concise notice, applies `pending close`, and
+records `due_at = notice_posted_at + 24 hours`. The issue stays open. At the deadline the
+existing poll loop enqueues a check that re-reads the issue, canonical issue, installation
+access, and all comments. Reviewbot then:
+
+- cancels the case and leaves the issue open after a maintainer override, a human state
+  change, or a canonical issue that can no longer be verified;
+- pauses and reassesses a substantive reporter or write-access follow-up (generic thanks,
+  emoji, `+1`, and status pings do not reset the deadline);
+- renews the deadline with a new notice when the report is still defensibly the same;
+- otherwise posts one closing explanation, closes with `state_reason=duplicate`, replaces
+  `pending close` with `duplicate`, and records bot ownership.
+
+Before closing, Reviewbot re-resolves the canonical chain; if the verified original moved, it
+posts an updated reference and starts a new 24-hour window instead of closing onto a stale
+target. Failed deadline checks back off and stop automatic retries after three attempts, and a
+permanently failed comment reassessment is not retried for the same comment; the issue stays
+open and the error is visible in `status`.
+
+After closure, a substantiated difference from the reporter or a write-access collaborator can
+reopen only an issue that Reviewbot closed as a duplicate. A human reopen, human close, or
+cancellation is never fought or automatically re-armed. These labels are created only when
+missing; label API failures are recorded in diagnostics and never block the issue workflow.
+
+### Response style
+
+Comments are written as concise maintainer prose, not investigation reports. The shared
+instructions live in `src/prompt.md`; task-specific phrasing references in `src/prompts/` are
+appended only for the current job kind (triage, duplicate reassessment, review, or
+conversation). A confirmed duplicate links the canonical issue, states the match briefly, and
+does not repeat evidence already tracked there. Investigation depth does not determine comment
+length, and the daemon still appends every deadline and lifecycle disclosure.
 
 ### Sessions
 
@@ -198,8 +246,9 @@ ruleset is the execution boundary.
 
 ## Logging
 
-`reviewbot status` shows the configured model (or `OpenCode default`). `reviewbot doctor`
-verifies that a configured model is enabled and available.
+`reviewbot status` shows the configured model (or `OpenCode default`), pending/closed
+duplicate-case counts, and recorded lifecycle or poll errors. `reviewbot doctor` verifies that
+a configured model is enabled and available.
 
 `LOG_LEVEL` controls daemon log verbosity (`debug`, `info`, `warn`, `error`). Logs go to
 stderr; credential-shaped values are redacted.
@@ -212,14 +261,16 @@ bun run typecheck
 reviewbot doctor
 ```
 
-Unit tests cover host/config validation, mention and intent detection, diff line mapping,
+Unit tests cover host/config validation, command and intent detection, diff line mapping,
 job transitions and recovery, idempotency markers, result validation, permission rules,
-credential isolation, rate-limit classification, polling baselines, authorization, and
-publication. They use in-memory SQLite and do not contact GitHub.
+credential isolation, rate-limit classification, polling baselines, authorization,
+publication, duplicate discovery, canonical selection, duplicate deadlines, maintainer
+overrides, reopening, and restart reconciliation. They use in-memory SQLite, fake GitHub and
+OpenCode collaborators, and injected time; no test waits 24 hours or contacts GitHub.
 
-External acceptance tests (AC-01 through AC-20) require a dedicated organization and test
-repository on `acme.ghe.com`, an installed App, and working model quota. They are not
-claimed as passed without those resources.
+External acceptance tests (AC-01 through AC-20 from v1.0 and AC-21 through AC-41 from v1.1)
+require a dedicated organization and test repository on `acme.ghe.com`, an installed App, and
+working model quota. They are not claimed as passed without those resources.
 
 ## Troubleshooting
 
@@ -246,6 +297,15 @@ claimed as passed without those resources.
   is no retry command by design.
 - After an ambiguous review publication is recovered, the head is marked reviewed without
   recording the unpublished model result as published findings.
+- Duplicate canonical selection follows direct references, bounded search, and verified
+  bot-managed duplicate chains; it does not perform semantic cross-repository deduplication.
+- A closed canonical issue only supports `confirmed_duplicate` when the reporter explicitly
+  linked it. Other matches against a closed issue are treated as related so a regression is
+  not silently closed.
+- A comment that arrives after the final pre-close read but before GitHub processes the close
+  is handled by the post-closure reassessment path rather than preventing that close.
+- Live App-permission behavior for label creation and `state_reason=duplicate` on GHE.com
+  remains an external acceptance item.
 - Conditional requests cover the stable open-PR list; issue and comment queries change their
   `since` window each cycle and rely on bounded overlap and dedupe.
 - One GitHub host, one local operator, one global worker, and one polling interval are
@@ -267,18 +327,22 @@ src/
   config.ts     Valibot schemas, host validation, secure paths
   paths.ts      Per-user config/data/workspace locations
   github.ts     App auth, installation clients, REST helpers, manifest exchange
-  polling.ts    Discovery, baselines, cursors, mention authorization
-  db.ts         SQLite schema, durable jobs, publication idempotency
+  polling.ts    Discovery, baselines, cursors, command authorization, duplicate deadlines
+  db.ts         SQLite schema, durable jobs, publication idempotency, duplicate cases
   jobs.ts       Payload schemas, job keys, prompt truncation
-  worker.ts     Single worker, task prompts, timeouts, retries, recovery
+  worker.ts     Single worker, task prompts, timeouts, retries, recovery, duplicate tasks
+  commands.ts   `/rb` command detection and instruction stripping
   opencode.ts   Service discovery, compatibility, sessions, permissions, results
   workspace.ts  Mirror clones, clean wrapper worktrees, authenticated Git, integrity checks
-  related.ts    Bounded related issue/PR context for triage
+  duplicate-discovery.ts  Bounded direct references, search, and candidate context
+  duplicates.ts  Duplicate policy, canonical rules, notices, comment evidence heuristics
+  duplicate-lifecycle.ts  Durable notice, deadline, cancellation, closure, and reopen transitions
   diff.ts       Unified diff parsing and changed-line mapping
-  publish.ts    Triage, review, reply, and draft PR publication
+  publish.ts    Triage, review, reply, duplicate notice/close, and draft PR publication
   schemas.ts    Result schemas, markers, model-output parsing
   security.ts   Permission enforcement probe and gate
   log.ts        Pino logger and redaction
-  prompt.md     Versioned task instructions
+  prompt.md     Versioned shared task instructions
+  prompts/      Task-specific plain-text phrasing references appended per job kind
 test/           bun test suites
 ```

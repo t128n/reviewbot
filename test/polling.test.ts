@@ -125,6 +125,8 @@ class FakeGitHub {
       updatedAt: nowIso(),
       isPullRequest: false,
       state: "open",
+      stateReason: null,
+      labels: [],
       htmlUrl: `https://acme.ghe.com/acme/repo/issues/${number}`,
     } satisfies IssueSummary;
   }
@@ -159,6 +161,8 @@ function issue(number: number, created: string): IssueSummary {
     updatedAt: created,
     isPullRequest: false,
     state: "open",
+    stateReason: null,
+    labels: [],
     htmlUrl: `https://acme.ghe.com/acme/repo/issues/${number}`,
   };
 }
@@ -426,8 +430,8 @@ describe("conditional requests", () => {
   });
 });
 
-describe("mention authorization", () => {
-  test("queues authorized mentions and ignores unauthorized users", async () => {
+describe("command authorization", () => {
+  test("queues authorized /rb commands and ignores unauthorized users", async () => {
     const store = new Store(":memory:");
     const fake = new FakeGitHub();
     const baseline = addSeconds(nowIso(), -3600);
@@ -441,7 +445,7 @@ describe("mention authorization", () => {
       baseline,
     });
     fake.state.issueComments = [
-      comment(10, "@reviewbot can you investigate?", addSeconds(nowIso(), 5)),
+      comment(10, "/rb can you investigate?", addSeconds(nowIso(), 5)),
     ];
     fake.state.permission = "read";
     const poller = makePoller(store, fake);
@@ -470,6 +474,30 @@ describe("mention authorization", () => {
     store2.close();
   });
 
+  test("ignores the old mention trigger and embedded /rb tokens", async () => {
+    const store = new Store(":memory:");
+    const fake = new FakeGitHub();
+    const baseline = addSeconds(nowIso(), -3600);
+    store.upsertRepository({
+      id: 1,
+      installationId: 1,
+      owner: "acme",
+      name: "repo",
+      fullName: "acme/repo",
+      defaultBranch: "main",
+      baseline,
+    });
+    fake.state.permission = "admin";
+    fake.state.issueComments = [
+      comment(13, "@reviewbot can you investigate?", addSeconds(nowIso(), 5)),
+      comment(14, "This path src/rb/file.ts is unrelated", addSeconds(nowIso(), 6)),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+    store.close();
+  });
+
   test("treats explicit change instructions as fix jobs", async () => {
     const store = new Store(":memory:");
     const fake = new FakeGitHub();
@@ -485,7 +513,7 @@ describe("mention authorization", () => {
     });
     fake.state.permission = "write";
     fake.state.issueComments = [
-      comment(11, "@reviewbot fix the issue and open a draft PR", addSeconds(nowIso(), 5)),
+      comment(11, "/rb fix the issue and open a draft PR", addSeconds(nowIso(), 5)),
     ];
     const poller = makePoller(store, fake);
     await poller.pollOnce();
@@ -494,7 +522,7 @@ describe("mention authorization", () => {
     store.close();
   });
 
-  test("skips an unprocessable mention but continues and advances the checkpoint", async () => {
+  test("skips an unprocessable command but continues and advances the checkpoint", async () => {
     const store = new Store(":memory:");
     const fake = new FakeGitHub();
     const baseline = addSeconds(nowIso(), -3600);
@@ -510,8 +538,8 @@ describe("mention authorization", () => {
     fake.state.permission = "write";
     fake.state.permissionErrorFor = "mallory";
     fake.state.issueComments = [
-      comment(20, "@reviewbot investigate", addSeconds(nowIso(), 5), 1, "mallory"),
-      comment(21, "@reviewbot investigate", addSeconds(nowIso(), 6), 1, "alice"),
+      comment(20, "/rb investigate", addSeconds(nowIso(), 5), 1, "mallory"),
+      comment(21, "/rb investigate", addSeconds(nowIso(), 6), 1, "alice"),
     ];
     const poller = makePoller(store, fake);
     await poller.pollOnce();
@@ -536,7 +564,262 @@ describe("mention authorization", () => {
       baseline,
     });
     fake.state.issueComments = [
-      comment(12, "@reviewbot investigate", addSeconds(nowIso(), -7200)),
+      comment(12, "/rb investigate", addSeconds(nowIso(), -7200)),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+    store.close();
+  });
+});
+
+describe("duplicate lifecycle polling", () => {
+  function initialized(baseline: string): Store {
+    const store = new Store(":memory:");
+    store.upsertRepository({
+      id: 1,
+      installationId: 1,
+      owner: "acme",
+      name: "repo",
+      fullName: "acme/repo",
+      defaultBranch: "main",
+      baseline,
+    });
+    return store;
+  }
+
+  function pendingCase(
+    store: Store,
+    issueNumber: number,
+    input: {
+      status?: "pending" | "closed" | "notice_pending";
+      dueAt?: string;
+      noticeAt?: string;
+    } = {},
+  ) {
+    store.createDuplicateCase({
+      repoId: 1,
+      issueNumber,
+      canonicalIssueNumber: 3,
+      classification: "likely",
+      lastDecisionReference: "{}",
+    });
+    store.updateDuplicateCase(1, issueNumber, {
+      status: input.status ?? "pending",
+      noticePostedAt: input.noticeAt ?? addSeconds(nowIso(), -3600),
+      dueAt: input.dueAt ?? addSeconds(nowIso(), 3600),
+      noticeCommentId: 40,
+    });
+    return store.getDuplicateCase(1, issueNumber)!;
+  }
+
+  test("enqueues a due closure check through the ordinary poll", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    const record = pendingCase(store, 1, {
+      dueAt: addSeconds(nowIso(), -60),
+    });
+    const fake = new FakeGitHub();
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    const job = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    expect(job.kind).toBe("duplicate-due");
+    expect(job.key).toContain(record.dueAt!);
+    expect(JSON.parse(job.payload).issueNumber).toBe(1);
+    store.close();
+  });
+
+  test("reconciles a notice intent that was never confirmed", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1, { status: "notice_pending" });
+    const fake = new FakeGitHub();
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    const job = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    expect(job.kind).toBe("duplicate-due");
+    expect(job.key).toContain("notice:");
+    store.close();
+  });
+
+  test("queues a reporter follow-up without a command", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1);
+    const fake = new FakeGitHub();
+    fake.state.permission = "read";
+    fake.state.issueComments = [
+      comment(
+        20,
+        "This is different: it only happens when creating a workspace.",
+        addSeconds(nowIso(), 5),
+        1,
+        "alice",
+      ),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    const job = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    expect(job.kind).toBe("duplicate-comment");
+    expect(job.key).toBe("duplicate-comment:1:20");
+    expect(JSON.parse(job.payload).author).toBe("alice");
+    store.close();
+  });
+
+  test("does not reassess a generic thanks reply", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1);
+    const fake = new FakeGitHub();
+    fake.state.issueComments = [
+      comment(21, "thanks!", addSeconds(nowIso(), 5), 1, "alice"),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+    store.close();
+  });
+
+  test("ignores a non-reporter follow-up without write access", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1);
+    const fake = new FakeGitHub();
+    fake.state.permission = "read";
+    fake.state.issueComments = [
+      comment(
+        22,
+        "This is a different failure with a different stack trace.",
+        addSeconds(nowIso(), 5),
+        1,
+        "mallory",
+      ),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+    store.close();
+  });
+
+  test("queues a maintainer override from a write-access collaborator", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1);
+    const fake = new FakeGitHub();
+    fake.state.issueComments = [
+      comment(23, "keep this open", addSeconds(nowIso(), 5), 1, "mallory"),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    const job = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    expect(job.kind).toBe("duplicate-comment");
+    store.close();
+  });
+
+  test("queues both the authorized command task and duplicate evidence handling", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1);
+    const fake = new FakeGitHub();
+    fake.state.issueComments = [
+      comment(
+        24,
+        "/rb this is different because it happens during creation.",
+        addSeconds(nowIso(), 5),
+        1,
+        "alice",
+      ),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(2);
+    const first = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    const second = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    expect([first.kind, second.kind].sort()).toEqual([
+      "conversation",
+      "duplicate-comment",
+    ]);
+    store.close();
+  });
+
+  test("accepts post-closure follow-up from the reporter", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1, { status: "closed" });
+    const fake = new FakeGitHub();
+    fake.state.issueComments = [
+      comment(
+        25,
+        "My logs show the request arriving and failing later.",
+        addSeconds(nowIso(), 5),
+        1,
+        "alice",
+      ),
+    ];
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    const job = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    expect(job.kind).toBe("duplicate-comment");
+    store.close();
+  });
+
+  test("does not re-enqueue a duplicate reassessment that failed permanently", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1);
+    const fake = new FakeGitHub();
+    fake.state.issueComments = [
+      comment(
+        30,
+        "This is a different failure with a different stack trace.",
+        addSeconds(nowIso(), 5),
+        1,
+        "alice",
+      ),
+    ];
+    store.enqueueJob({
+      key: "duplicate-comment:1:30",
+      kind: "duplicate-comment",
+      repoId: 1,
+      payload: {},
+    });
+    const failed = store.claimNextJob(addSeconds(nowIso(), 3600))!;
+    store.failJob(failed.id, "permanent", { retryable: false });
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+    store.close();
+  });
+
+  test("applies deadline backoff and the retry cap through the poll", async () => {
+    const store = initialized(addSeconds(nowIso(), -3600));
+    pendingCase(store, 1, {
+      dueAt: addSeconds(nowIso(), -60),
+    });
+    store.updateDuplicateCase(1, 1, { attempts: 3 });
+    const fake = new FakeGitHub();
+    const poller = makePoller(store, fake);
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+
+    store.updateDuplicateCase(1, 1, {
+      attempts: 1,
+      nextAttemptAt: addSeconds(nowIso(), 300),
+    });
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(0);
+
+    store.updateDuplicateCase(1, 1, {
+      nextAttemptAt: addSeconds(nowIso(), -1),
+    });
+    await poller.pollOnce();
+    expect(store.queueDepth()).toBe(1);
+    store.close();
+  });
+
+  test("ignores comments posted before the duplicate notice", async () => {
+    const store = initialized(addSeconds(nowIso(), -7200));
+    pendingCase(store, 1, { noticeAt: addSeconds(nowIso(), -1800) });
+    const fake = new FakeGitHub();
+    fake.state.issueComments = [
+      comment(
+        26,
+        "This is a different failure with a different stack trace.",
+        addSeconds(nowIso(), -3600),
+        1,
+        "alice",
+      ),
     ];
     const poller = makePoller(store, fake);
     await poller.pollOnce();

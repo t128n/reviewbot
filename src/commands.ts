@@ -49,12 +49,10 @@ const CODE_OBJECTS = [
   "config",
 ];
 
-/** True when the comment explicitly mentions the installed App. */
-export function hasMention(body: string, appSlug: string): boolean {
-  if (!body || !appSlug) return false;
-  const escaped = appSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(^|[^A-Za-z0-9_-])@${escaped}(?![A-Za-z0-9_-])`, "i");
-  return pattern.test(body);
+/** True when the comment contains the `/rb` command token. */
+export function hasCommand(body: string): boolean {
+  if (!body) return false;
+  return /(^|\s)\/rb(?![A-Za-z0-9_/-])/i.test(body);
 }
 
 /**
@@ -66,7 +64,7 @@ export function hasMention(body: string, appSlug: string): boolean {
 export function isFixRequest(body: string): boolean {
   let text = body.toLowerCase().trim();
   if (!text) return false;
-  // Questions and hypotheticals are conversation, even when they mention a
+  // Questions and hypotheticals are conversation, even when they ask for a
   // change. Code modification requires an imperative request.
   if (text.endsWith("?")) return false;
   if (/(open|create|raise|submit)\s+(a\s+)?draft\s+(pr|pull request)/.test(text)) {
@@ -80,11 +78,10 @@ export function isFixRequest(body: string): boolean {
   );
 }
 
-/** Remove the mention token so the remaining instruction is self-contained. */
-export function stripMention(body: string, appSlug: string): string {
-  const escaped = appSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Remove the command token so the remaining instruction is self-contained. */
+export function stripCommand(body: string): string {
   return body
-    .replace(new RegExp(`@${escaped}\\b`, "gi"), "")
+    .replace(/(^|\s)\/rb(?![A-Za-z0-9_/-])/gi, "")
     .replace(/^[\s,;:.!?\-–—]+/, "")
     .trim();
 }

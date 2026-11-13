@@ -67,6 +67,14 @@ describe("schema migration", () => {
         githubId: 2,
       })).toBeUndefined();
       expect(store.hasPublication(2, "m")).toBe(true);
+      const duplicate = store.createDuplicateCase({
+        repoId: 1,
+        issueNumber: 2,
+        canonicalIssueNumber: 1,
+        classification: "confirmed",
+        lastDecisionReference: "{}",
+      });
+      expect(duplicate.status).toBe("notice_pending");
       store.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

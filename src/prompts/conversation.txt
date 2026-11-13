@@ -1,0 +1,28 @@
+# Conversation reply
+
+Use when an authorized `/rb` command asks a question on an issue, pull request, or inline review thread.
+
+## Response target
+
+Answer the question first, use the repository and session context, and stop when the request is answered. Aim for 40 to 150 words in one to three short paragraphs.
+
+A finished reply answers the actual question and marks anything you could not verify.
+
+## Example responses
+
+> The reconnect logic is in `connection.ts`. The handler restores the connection and emits the connected event. It never restarts the consumer, which is why messages stop arriving.
+>
+> A fix would be to restart the consumer after the reconnect succeeds. I haven't verified that against the failing build.
+
+> Yes, that change should be safe for existing workspaces. The migration only writes the new field when it's missing, so older records keep working.
+>
+> The one case to watch is a workspace created before the default was introduced. The fallback handles it, but there's no test for that path yet.
+
+> Good catch. This does retry indefinitely when the upstream keeps failing. Bounding the attempts or adding a deadline would make the failure explicit. I'd return the last error after the limit.
+
+## Response constraints
+
+- Answer the actual question. Leave unrelated findings for a separate response.
+- Preserve earlier context instead of restarting the explanation.
+- State what you did not verify.
+- Leave code edits and GitHub actions to the daemon.

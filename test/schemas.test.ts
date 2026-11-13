@@ -12,10 +12,11 @@ import {
 describe("structured results", () => {
   test("accepts a fenced JSON result with surrounding prose", () => {
     const result = parseStructuredResult(
-      'Here is my assessment.\n```json\n{"comment":"Looks like a null check is missing."}\n```\nDone.',
+      'Here is my assessment.\n```json\n{"comment":"Looks like a null check is missing.","duplicate":{"kind":"independent","reason":"No existing report matches"}}\n```\nDone.',
       TriageResultSchema,
     );
     expect(result.comment).toContain("null check");
+    expect(result.duplicate.kind).toBe("independent");
   });
 
   test("accepts a bare JSON object", () => {
@@ -39,6 +40,20 @@ describe("structured results", () => {
         ReviewResultSchema,
       ),
     ).toThrow(ResultValidationError);
+  });
+
+  test("accepts an incomplete duplicate proposal for deterministic downgrade", () => {
+    const parsed = parseStructuredResult(
+      '{"comment":"Probably the same.","duplicate":{"kind":"likely_duplicate","canonicalIssueNumber":7,"reason":"same symptom"}}',
+      TriageResultSchema,
+    );
+    expect(parsed.duplicate.kind).toBe("likely_duplicate");
+    expect(() =>
+      parseStructuredResult(
+        '{"comment":"Probably the same.","duplicate":{"kind":"likely_duplicate","reason":"same symptom"}}',
+        TriageResultSchema,
+      ),
+    ).not.toThrow();
   });
 
   test("rejects oversized output", () => {

@@ -12,7 +12,7 @@ import {
   type Config,
   type Credentials,
 } from "./config.ts";
-import { Store, nowIso } from "./db.ts";
+import { Store, nowIso, type DuplicateCaseStatus } from "./db.ts";
 import { GitHub } from "./github.ts";
 import { OpenCodeAdapter, isCompatibleServer } from "./opencode.ts";
 import { evaluateSecurityGate, gateIsOpen, type SecurityGate } from "./security.ts";
@@ -234,6 +234,8 @@ export interface StatusReport {
   recentFailures: Array<{ key: string; error: string | null }>;
   pollErrors: Array<{ repo: string; error: string }>;
   security: SecurityGate | null;
+  duplicateCases: Record<DuplicateCaseStatus, number>;
+  duplicateErrors: Array<{ repo: string; issueNumber: number; error: string }>;
 }
 
 export async function collectStatus(logger: Logger): Promise<StatusReport> {
@@ -270,6 +272,14 @@ export async function collectStatus(logger: Logger): Promise<StatusReport> {
     recentFailures: [],
     pollErrors: [],
     security: null,
+    duplicateCases: {
+      notice_pending: 0,
+      pending: 0,
+      closed: 0,
+      cancelled: 0,
+      reopened: 0,
+    },
+    duplicateErrors: [],
   };
 
   let store: Store | null = null;
@@ -296,6 +306,8 @@ export async function collectStatus(logger: Logger): Promise<StatusReport> {
         repo: repository.fullName,
         error: repository.lastPollError!,
       }));
+    report.duplicateCases = store.duplicateCaseCounts();
+    report.duplicateErrors = store.recentDuplicateErrors(5);
     const gateRaw = store.getMeta("security.gate");
     if (gateRaw) {
       try {

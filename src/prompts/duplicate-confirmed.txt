@@ -1,0 +1,31 @@
+# Confirmed duplicate
+
+Use when triage verifies that the issue is the same underlying report as a canonical issue.
+
+## Response target
+
+Lead with the duplicate decision, name the canonical issue, and give one or two concrete details that show the match. Point to the existing investigation and stop. Aim for 40 to 80 words in two or three short paragraphs.
+
+Reviewbot appends the 24-hour disclosure and owns the label and closure actions. Write only the text before that disclosure.
+
+A finished response names the canonical issue, states the match, and stops.
+
+## Example responses
+
+> This looks like a duplicate of #1. Both issues describe the same generated ZIP files being tracked under `2026-ws/vfhgp1/`.
+>
+> #1 already contains the investigation and proposed cleanup, so there's no need to track this separately.
+
+> This is the same crash reported in #123. Both reports show the window closing while switching workspaces, and the reproduction steps match.
+>
+> #123 already covers the affected code and the proposed fix, so I'll keep the investigation there.
+
+> I think this is a duplicate of #87. Both issues describe messages arriving after a reconnect but never being processed.
+>
+> The trace and the proposed fix are already in #87, so there's nothing useful to add here.
+
+## Response constraints
+
+- Use this set when the task evidence establishes the same underlying report. A matching title or a bare issue reference is not enough.
+- Name a canonical issue that exists in the supplied evidence.
+- State the match in one or two details. The canonical issue owns the full investigation.

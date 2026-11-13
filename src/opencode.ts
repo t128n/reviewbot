@@ -527,6 +527,65 @@ export function loadPrompt(): string {
   }
 }
 
+/** Job-shaped task kinds that receive task-specific phrasing references. */
+export type PromptTask =
+  | "triage"
+  | "duplicate-reassessment"
+  | "review"
+  | "conversation"
+  | "fix";
+
+/**
+ * Triage covers every possible outcome, so it receives the duplicate, investigation, and
+ * clarification references together. Other tasks receive only the examples for their outcome.
+ */
+export const PROMPT_EXAMPLES: Record<PromptTask, readonly string[]> = {
+  triage: [
+    "duplicate-confirmed",
+    "duplicate-likely",
+    "issue-investigation",
+    "issue-clarification",
+  ],
+  "duplicate-reassessment": ["duplicate-closed", "duplicate-reopened"],
+  review: ["pr-review"],
+  conversation: ["conversation"],
+  fix: [],
+};
+
+const EXAMPLES_NOTE =
+  "The examples below are behavioral references for this task. Adapt them to the supplied evidence; do not reuse their issue numbers, paths, symptoms, or findings, and do not treat them as fixed templates.";
+
+export function loadPromptFor(task: PromptTask): string {
+  return composePrompt(loadPrompt(), task);
+}
+
+/** Append only the example sets relevant to the selected task. */
+export function composePrompt(base: string, task: PromptTask): string {
+  const names = PROMPT_EXAMPLES[task];
+  if (names.length === 0) return base.trimEnd();
+  return [
+    base.trimEnd(),
+    "## Task-specific response examples",
+    EXAMPLES_NOTE,
+    ...names.map((name) =>
+      [`Example set: ${name}`, "", loadPromptExample(name)].join("\n"),
+    ),
+  ].join("\n\n");
+}
+
+function loadPromptExample(name: string): string {
+  try {
+    return readFileSync(
+      new URL(`./prompts/${name}.txt`, import.meta.url),
+      "utf8",
+    ).trim();
+  } catch (error) {
+    throw new Error(
+      `Reviewbot response example "${name}" is missing: ${errorText(error)}`,
+    );
+  }
+}
+
 function isRetryableProviderError(type: string, status?: number): boolean {
   if (type === "provider.quota" || type === "provider.auth") return false;
   if (status === 401 || status === 403) return false;

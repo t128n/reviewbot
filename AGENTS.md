@@ -2,9 +2,10 @@
 
 ## Source of truth
 
-- Product scope: `docs/specs/v1.0.md`. Do not expand beyond it.
+- Product scope: `docs/specs/v1.1.md`, which extends the implemented
+  `docs/specs/v1.0.md` baseline. Do not expand beyond them.
 - Architecture decisions: `docs/adr/`.
-- Implementation plan and progress: `docs/plans/v1.0.md`.
+- Implementation plans and progress: `docs/plans/v1.0.md` and `docs/plans/v1.1.md`.
 
 Document intended behavior and consequential decisions before implementing them. Reconcile
 the plan and ADRs with what actually shipped. Do not describe unverified external behavior
@@ -59,6 +60,13 @@ organization; do not use production repositories for experiments.
 - Never execute project scripts or tests from untrusted repositories. Every Git invocation
   must disable repository hooks.
 - Reject unrequested CI workflow edits from implementation jobs.
+- Duplicate labels, deadlines, canonical targets, and closure/reopen decisions are
+  deterministic daemon policy. Issue text and model output may recommend a decision but never
+  authorize a GitHub mutation. Revalidate installation access, issue state, canonical issue,
+  and comments immediately before every duplicate transition.
+- Only `pending close` and `duplicate` may be managed, and only labels recorded as
+  Reviewbot-applied may be removed. Never re-close an issue a human reopened or re-arm a
+  cancelled case automatically.
 
 ## Testing
 

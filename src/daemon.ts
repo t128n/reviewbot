@@ -2,7 +2,7 @@ import type { Config, Credentials } from "./config.ts";
 import { Store } from "./db.ts";
 import { databasePath } from "./paths.ts";
 import { GitHub } from "./github.ts";
-import { OpenCodeAdapter, loadPrompt } from "./opencode.ts";
+import { OpenCodeAdapter, loadPromptFor } from "./opencode.ts";
 import { Poller, RateLimitedError } from "./polling.ts";
 import { Publisher } from "./publish.ts";
 import { evaluateSecurityGate, gateIsOpen, type SecurityGate } from "./security.ts";
@@ -67,7 +67,7 @@ export async function runDaemon(options: {
     publisher,
     workspace,
     logger,
-    prompt: loadPrompt(),
+    promptFor: loadPromptFor,
     gateOpen: () => gateIsOpen(gate),
     host: config.github.host,
     botLogin: `${app.slug}[bot]`,

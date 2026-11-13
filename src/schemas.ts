@@ -3,12 +3,64 @@ import * as v from "valibot";
 export const MAX_RESULT_CHARS = 200_000;
 
 const CommentText = v.pipe(v.string(), v.minLength(1), v.maxLength(20_000));
+const IssueNumber = v.pipe(v.number(), v.integer(), v.minValue(1));
+const ReasonText = v.pipe(v.string(), v.minLength(1), v.maxLength(4_000));
+const EvidenceText = v.pipe(v.string(), v.minLength(1), v.maxLength(2_000));
+
+/**
+ * The model's advisory duplicate decision. The daemon validates references and
+ * decides whether the proposal may trigger a lifecycle transition.
+ */
+export const DuplicateDecisionSchema = v.variant("kind", [
+  v.object({
+    kind: v.picklist(["independent", "related"]),
+    canonicalIssueNumber: v.optional(v.nullable(IssueNumber)),
+    reason: ReasonText,
+  }),
+  v.object({
+    kind: v.literal("confirmed_duplicate"),
+    canonicalIssueNumber: v.optional(v.nullable(IssueNumber)),
+    reason: ReasonText,
+    matchingEvidence: v.optional(
+      v.pipe(v.array(EvidenceText), v.maxLength(10)),
+    ),
+    distinguishingQuestion: v.optional(
+      v.pipe(v.string(), v.maxLength(1_000)),
+    ),
+  }),
+  v.object({
+    kind: v.literal("likely_duplicate"),
+    canonicalIssueNumber: v.optional(v.nullable(IssueNumber)),
+    reason: ReasonText,
+    matchingEvidence: v.optional(
+      v.pipe(v.array(EvidenceText), v.maxLength(10)),
+    ),
+    distinguishingQuestion: v.optional(
+      v.pipe(v.string(), v.maxLength(1_000)),
+    ),
+  }),
+]);
+
+export type DuplicateDecision = v.InferOutput<typeof DuplicateDecisionSchema>;
+export type DuplicateDecisionKind = DuplicateDecision["kind"];
 
 export const TriageResultSchema = v.object({
   comment: CommentText,
+  duplicate: DuplicateDecisionSchema,
 });
 
 export type TriageResult = v.InferOutput<typeof TriageResultSchema>;
+
+/** Result of reviewing new comments in an existing duplicate case. */
+export const DuplicateReassessmentSchema = v.object({
+  comment: CommentText,
+  outcome: v.picklist(["distinct", "still_duplicate", "uncertain"]),
+  reason: ReasonText,
+});
+
+export type DuplicateReassessment = v.InferOutput<
+  typeof DuplicateReassessmentSchema
+>;
 
 export const ConversationResultSchema = v.object({
   comment: CommentText,
@@ -92,6 +144,12 @@ export const PublicationMarker = {
   fix: (commentId: number) => `<!-- reviewbot:fix:${commentId} -->`,
   fixPr: (commentId: number) => `<!-- reviewbot:fix-pr:${commentId} -->`,
   fixError: (commentId: number) => `<!-- reviewbot:fix-error:${commentId} -->`,
+  duplicateNotice: (issueNumber: number, revision: number) =>
+    `<!-- reviewbot:duplicate-notice:${issueNumber}:${revision} -->`,
+  duplicateClosure: (issueNumber: number, revision: number) =>
+    `<!-- reviewbot:duplicate-close:${issueNumber}:${revision} -->`,
+  duplicateComment: (issueNumber: number, key: string) =>
+    `<!-- reviewbot:duplicate-comment:${issueNumber}:${key} -->`,
 };
 
 export function withMarker(body: string, marker: string): string {

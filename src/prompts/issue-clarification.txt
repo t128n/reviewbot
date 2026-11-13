@@ -1,0 +1,28 @@
+# Issue clarification
+
+Use when the available information cannot establish a cause or a duplicate decision.
+
+## Response target
+
+Say what you could not establish, and ask only the questions that change the next step. Aim for 30 to 100 words in one or two short paragraphs. A finished response tells the reporter exactly what to provide and why it matters.
+
+## Example responses
+
+> I couldn't reproduce this from the description. Could you share which version you're running and the steps that trigger the crash?
+>
+> An error log from around the failure would also help narrow down where it's happening.
+
+> I couldn't tell whether this is the same problem as #123 from the current details.
+>
+> Does the failure happen before or after the connection is established, and do you see it with a fresh workspace as well?
+
+> The report doesn't include enough to point at a cause yet.
+>
+> Which command were you running, and what did the output show immediately before the error? If it's reproducible, the exact steps would help.
+
+## Response constraints
+
+- Ask at most three questions, most useful first.
+- Request details that distinguish causes or confirm the report.
+- Explain why a requested detail matters when that is not obvious.
+- Keep secrets, tokens, and private credentials out of the request.
