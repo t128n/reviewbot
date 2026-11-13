@@ -83,5 +83,8 @@ export function isFixRequest(body: string): boolean {
 /** Remove the mention token so the remaining instruction is self-contained. */
 export function stripMention(body: string, appSlug: string): string {
   const escaped = appSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return body.replace(new RegExp(`@${escaped}\\b`, "gi"), "").trim();
+  return body
+    .replace(new RegExp(`@${escaped}\\b`, "gi"), "")
+    .replace(/^[\s,;:.!?\-–—]+/, "")
+    .trim();
 }

@@ -48,7 +48,7 @@ organization; do not use production repositories for experiments.
   permission, the current PR head, and diff line locations.
 - Only accept idempotency markers authored by the installed App; strip marker-like text from
   model output.
-- Keep Reviewbot credentials, database, and probe directories denied to OpenCode sessions.
+- Keep Reviewbot credentials and database files denied to OpenCode sessions.
 - If the permission enforcement probe cannot verify both rulesets, automatic jobs stay
   queued. Do not weaken this gate to make a task pass.
 - Keep sessions rooted in a clean wrapper so repository-local OpenCode config, plugins,

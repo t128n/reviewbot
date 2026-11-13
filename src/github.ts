@@ -62,7 +62,6 @@ export interface CommentSummary {
   updatedAt: string;
   issueNumber: number | null;
   htmlUrl: string;
-  pullRequestReviewId?: number | null;
   path: string | null;
   line: number | null;
   originalLine: number | null;
@@ -585,7 +584,13 @@ export class GitHub {
     owner: string,
     repo: string,
     head: string,
-  ): Promise<{ number: number; htmlUrl: string; draft: boolean; author: string } | null> {
+  ): Promise<{
+    number: number;
+    htmlUrl: string;
+    draft: boolean;
+    author: string;
+    headSha: string;
+  } | null> {
     const data = await this.request<Array<Record<string, unknown>>>(
       octokit,
       "GET /repos/{owner}/{repo}/pulls",
@@ -604,6 +609,7 @@ export class GitHub {
       htmlUrl: String(match.html_url ?? ""),
       draft: Boolean(match.draft),
       author: String((match.user as Record<string, unknown> | undefined)?.login ?? ""),
+      headSha: String((match.head as Record<string, unknown> | undefined)?.sha ?? ""),
     };
   }
 
@@ -814,10 +820,6 @@ function mapComment(item: Record<string, unknown>, isIssueComment: boolean): Com
       ? numberFromIssueUrl(String(item.issue_url ?? item.html_url ?? ""))
       : numberFromPullUrl(String(item.html_url ?? "")),
     htmlUrl: String(item.html_url ?? ""),
-    pullRequestReviewId:
-      typeof item.pull_request_review_id === "number"
-        ? item.pull_request_review_id
-        : null,
     path: !isIssueComment && typeof item.path === "string" ? item.path : null,
     line: !isIssueComment && typeof item.line === "number" ? item.line : null,
     originalLine:

@@ -70,6 +70,7 @@ export async function runDaemon(options: {
     gateOpen: () => gateIsOpen(gate),
     host: config.github.host,
     botLogin: `${app.slug}[bot]`,
+    isStopping: () => stopped,
     closeGate: (reason: string) => {
       gate = null;
       logger.warn({ reason }, "security gate closed after OpenCode unavailability");

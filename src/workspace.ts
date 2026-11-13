@@ -38,6 +38,11 @@ export function gitAuthEnv(
     env.GIT_CONFIG_COUNT = "1";
     env.GIT_CONFIG_KEY_0 = `http.${webBaseUrl(host)}/.extraheader`;
     env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+  } else {
+    // Ignore any inherited command-line Git config environment.
+    env.GIT_CONFIG_COUNT = "0";
+    delete env.GIT_CONFIG_KEY_0;
+    delete env.GIT_CONFIG_VALUE_0;
   }
   return env;
 }
@@ -186,7 +191,11 @@ export class WorkspaceManager {
         host: this.host,
       });
     } catch (error) {
-      rmSync(root, { recursive: true, force: true });
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup; the original Git error is more useful.
+      }
       throw error;
     }
     const head = await this.revParse(path);
@@ -234,7 +243,7 @@ export class WorkspaceManager {
     const head = (
       await runGit(["rev-parse", ref], { cwd: mirror, host: this.host })
     ).stdout.trim();
-    mkdirSync(worktreesDir(), { recursive: true });
+    mkdirSync(worktreesDir(), { recursive: true, mode: 0o700 });
     const root = join(
       worktreesDir(),
       `subject-${options.repo.id}-${sanitizeBranchPart(options.label)}`,
@@ -277,8 +286,9 @@ export class WorkspaceManager {
   async commitAll(
     cwd: string,
     message: string,
+    repo?: RepositoryRecord,
   ): Promise<{ sha: string; files: string[]; stat: string }> {
-    await this.assertWorktreeIntegrity(cwd);
+    await this.assertWorktreeIntegrity(cwd, repo);
     await runGit(["add", "-A"], { cwd, host: this.host });
     const names = await runGit(["diff", "--cached", "--name-only"], {
       cwd,
@@ -315,7 +325,7 @@ export class WorkspaceManager {
     branch: string;
     token: string;
   }): Promise<void> {
-    await this.assertWorktreeIntegrity(options.cwd);
+    await this.assertWorktreeIntegrity(options.cwd, options.repo);
     if (!/^[A-Za-z0-9._/-]+$/.test(options.branch) || options.branch.includes("..")) {
       throw new GitError(`Invalid branch name: ${options.branch}`, true);
     }
@@ -334,7 +344,10 @@ export class WorkspaceManager {
    * repository storage. OpenCode may edit files but must not turn the daemon's
    * Git commands into a bridge to another local repository.
    */
-  async assertWorktreeIntegrity(cwd: string): Promise<void> {
+  async assertWorktreeIntegrity(
+    cwd: string,
+    repo?: RepositoryRecord,
+  ): Promise<void> {
     let gitDir: string;
     let commonDir: string;
     try {
@@ -379,26 +392,53 @@ export class WorkspaceManager {
         true,
       );
     }
+    if (repo) {
+      const expected = realpathSync(this.mirrorPath(repo));
+      if (
+        !samePath(resolvedCommon, expected) ||
+        !isInside(resolvedGit, expected)
+      ) {
+        throw new GitError(
+          "Workspace Git metadata belongs to a different repository",
+          true,
+        );
+      }
+    }
   }
 
-  async remoteBranchExists(
+  async remoteBranchSha(
     repo: RepositoryRecord,
     branch: string,
     token: string,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const result = await runGit(
-      ["ls-remote", "--heads", repoUrl(this.host, repo.owner, repo.name), branch],
+      [
+        "ls-remote",
+        "--heads",
+        repoUrl(this.host, repo.owner, repo.name),
+        `refs/heads/${branch}`,
+      ],
       { token, host: this.host },
     );
-    return result.stdout.trim().length > 0;
+    const line = result.stdout.trim().split("\n")[0] ?? "";
+    const sha = line.split(/\s+/)[0] ?? "";
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   }
 }
 
+function normalizePath(value: string): string {
+  return (process.platform === "win32" ? value.toLowerCase() : value)
+    .replace(/[\\/]+/g, "/")
+    .replace(/\/$/, "");
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizePath(left) === normalizePath(right);
+}
+
 function isInside(path: string, root: string): boolean {
-  const normalize = (value: string) =>
-    (process.platform === "win32" ? value.toLowerCase() : value).replace(/[\\/]+/g, "/").replace(/\/$/, "");
-  const child = normalize(path);
-  const parent = normalize(root);
+  const child = normalizePath(path);
+  const parent = normalizePath(root);
   return child === parent || child.startsWith(`${parent}/`);
 }
 

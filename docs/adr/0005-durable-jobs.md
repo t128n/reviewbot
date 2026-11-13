@@ -15,7 +15,8 @@ publication after restart. Publication identifiers must allow recovery.
   mappings, jobs, reviewed heads, publication markers, and finding dedupe hashes.
 - Job kinds: `triage`, `review`, `conversation`, `fix`. Each has a stable dedupe key
   (`triage:<repo>:<issue>`, `review:<repo>:<pr>:<head>`, `conversation:<repo>:<comment>`,
-  `fix:<repo>:<comment>`). `INSERT OR IGNORE` on the key makes enqueueing idempotent.
+  `fix:<repo>:<comment>`). An upsert on the key makes enqueueing idempotent and refreshes the payload when a
+  permanently failed trigger is seen again.
 - The worker claims one job in a transaction (`queued` → `running`), executes it with a
   task-specific timeout, then marks it `completed` or `failed`. Transient failures are
   retried at most twice with backoff; authorization, validation, and malformed-output

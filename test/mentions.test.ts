@@ -18,6 +18,8 @@ describe("mentions", () => {
 
   test("strips the mention for a self-contained instruction", () => {
     expect(stripMention("@reviewbot fix the bug", "reviewbot")).toBe("fix the bug");
+    expect(stripMention("@reviewbot, fix the bug", "reviewbot")).toBe("fix the bug");
+    expect(stripMention("@reviewbot: fix the bug", "reviewbot")).toBe("fix the bug");
   });
 });
 
@@ -40,5 +42,7 @@ describe("implementation intent", () => {
     expect(isFixRequest("add a regression test for this case")).toBe(true);
     expect(isFixRequest("refactor the parser to handle empty input")).toBe(true);
     expect(isFixRequest("open a draft pr with the correction")).toBe(true);
+    expect(isFixRequest(stripMention("@reviewbot, fix the parser", "reviewbot"))).toBe(true);
+    expect(isFixRequest(stripMention("@reviewbot: fix the parser", "reviewbot"))).toBe(true);
   });
 });

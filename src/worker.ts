@@ -33,6 +33,13 @@ import { GitError, fixBranchName } from "./workspace.ts";
 import { renderDiffContext, type DiffFile } from "./diff.ts";
 import { selectRelatedIssues } from "./related.ts";
 
+export class InterruptedJobError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InterruptedJobError";
+  }
+}
+
 export class PermanentJobError extends Error {
   constructor(message: string) {
     super(message);
@@ -59,6 +66,7 @@ export class Worker {
   private readonly host: string;
   private readonly botLogin: string;
   private readonly closeGate: (reason: string) => void;
+  private readonly isStopping: () => boolean;
 
   constructor(options: {
     store: Store;
@@ -72,6 +80,7 @@ export class Worker {
     host: string;
     botLogin: string;
     closeGate?: (reason: string) => void;
+    isStopping?: () => boolean;
   }) {
     this.store = options.store;
     this.github = options.github;
@@ -84,6 +93,7 @@ export class Worker {
     this.host = options.host;
     this.botLogin = options.botLogin;
     this.closeGate = options.closeGate ?? (() => {});
+    this.isStopping = options.isStopping ?? (() => false);
   }
 
   /** Process at most one job. Returns false when the queue is empty or gated. */
@@ -105,6 +115,14 @@ export class Worker {
       );
     } catch (error) {
       const classification = classifyJobError(error);
+      if (error instanceof InterruptedJobError) {
+        this.store.requeueJob(job.id, error.message, 10);
+        this.logger.warn(
+          { jobId: job.id, kind: job.kind },
+          "daemon is stopping; job returned to the queue before side effects",
+        );
+        return true;
+      }
       if (error instanceof OpenCodeUnavailableError) {
         this.store.requeueJob(job.id, classification.message, 60);
         this.closeGate(classification.message);
@@ -128,7 +146,7 @@ export class Worker {
             await this.publisher.publishFixFailure({
               repo,
               payload: parsePayload(FixPayloadSchema, job.payload),
-              message: classification.message,
+              message: failureForPublication(error),
             });
           } catch {
             // Best-effort notification; the job failure is already durable.
@@ -246,6 +264,7 @@ export class Worker {
         timeoutMs: TIMEOUTS.triage,
       });
       const result = parseStructuredResult(run.text, TriageResultSchema);
+      this.assertNotStopping();
       const publication = await this.publisher.publishTriage({
         repo,
         issueNumber: payload.issueNumber,
@@ -344,6 +363,7 @@ export class Worker {
         timeoutMs: TIMEOUTS.review,
       });
       const result = parseStructuredResult(run.text, ReviewResultSchema);
+      this.assertNotStopping();
       const publication = await this.publisher.publishReview({
         repo,
         payload,
@@ -418,6 +438,14 @@ export class Worker {
       repo.name,
       payload.pullNumber,
     );
+  }
+
+  private assertNotStopping(): void {
+    if (this.isStopping()) {
+      throw new InterruptedJobError(
+        "Daemon shutdown interrupted the task before publication",
+      );
+    }
   }
 
   private webBase(): string {
@@ -513,7 +541,11 @@ export class Worker {
           : []),
         ...(payload.channel === "review" && payload.path
           ? [
-              `Inline review location: ${payload.path}${payload.line ? `:${payload.line}` : ""}`,
+              `Inline review location: ${payload.path}${
+                (payload.line ?? payload.originalLine)
+                  ? `:${payload.line ?? payload.originalLine}`
+                  : ""
+              }`,
               ...(payload.diffHunk
                 ? ["Review diff context:", payload.diffHunk.slice(0, 4000), ""]
                 : []),
@@ -535,6 +567,7 @@ export class Worker {
         timeoutMs: TIMEOUTS.conversation,
       });
       const result = parseStructuredResult(run.text, ConversationResultSchema);
+      this.assertNotStopping();
       const publication = await this.publisher.publishConversation({
         repo,
         payload,
@@ -585,7 +618,14 @@ export class Worker {
       payload.commentId,
     );
 
-    if (await this.workspace.remoteBranchExists(repo, branch, token)) {
+    const remoteSha = await this.workspace.remoteBranchSha(repo, branch, token);
+    if (remoteSha) {
+      const recorded = this.store.getFixBranch(repo.id, branch);
+      if (!recorded || recorded !== remoteSha) {
+        throw new PermanentJobError(
+          "The fix branch already exists with a tip that Reviewbot did not create; refusing to adopt it",
+        );
+      }
       const existing = await this.github.findPullByHead(
         await this.github.installationClient(
           repo.installationId,
@@ -596,9 +636,12 @@ export class Worker {
         branch,
       );
       if (existing) {
-        if (existing.author !== this.botLogin) {
+        if (
+          existing.author !== this.botLogin ||
+          existing.headSha !== remoteSha
+        ) {
           throw new PermanentJobError(
-            `Branch name is already used by another pull request author: ${existing.author}`,
+            "The branch is associated with a different pull request state; refusing to publish",
           );
         }
         return {
@@ -619,6 +662,7 @@ export class Worker {
           "The branch was pushed before the pull request was confirmed. Review the branch diff before merging.",
         ].join("\n"),
         note: "Recovered the draft pull request from the existing branch.",
+        expectedSha: remoteSha,
       });
       return { kind: "fix", recovered: true, publication: recovered };
     }
@@ -656,7 +700,8 @@ export class Worker {
         timeoutMs: TIMEOUTS.fix,
       });
       const result = parseStructuredResult(run.text, FixResultSchema);
-      await this.workspace.assertWorktreeIntegrity(worktree.path);
+      this.assertNotStopping();
+      await this.workspace.assertWorktreeIntegrity(worktree.path, repo);
       const changes = await this.workspace.changedFiles(worktree.path);
       if (changes.length === 0) {
         throw new PermanentJobError(
@@ -666,6 +711,7 @@ export class Worker {
       const committed = await this.workspace.commitAll(
         worktree.path,
         `Reviewbot: ${payload.title}`.slice(0, 200),
+        repo,
       );
       const ciFiles = committed.files.filter(
         (file) =>
@@ -682,6 +728,7 @@ export class Worker {
           `The implementation would modify CI configuration without an explicit CI request: ${ciFiles.join(", ")}`,
         );
       }
+      this.assertNotStopping();
       await this.workspace.pushBranch({
         repo,
         cwd: worktree.path,
@@ -691,6 +738,18 @@ export class Worker {
           metadata: "read",
         }),
       });
+      let pushedSha: string | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        pushedSha = await this.workspace.remoteBranchSha(repo, branch, token);
+        if (pushedSha === committed.sha) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      if (pushedSha !== committed.sha) {
+        throw new PermanentJobError(
+          "The pushed fix branch tip does not match the committed change",
+        );
+      }
+      this.store.recordFixBranch(repo.id, branch, committed.sha);
 
       const sourceUrl =
         payload.subjectType === "pr"
@@ -722,6 +781,7 @@ export class Worker {
         "\nCreated by Reviewbot after an authorized maintainer request.",
       ].join("\n");
 
+      this.assertNotStopping();
       const publication = await this.publisher.publishFix({
         repo,
         payload,
@@ -730,6 +790,7 @@ export class Worker {
         title: `Reviewbot: ${payload.title}`.slice(0, 120),
         body: prBody,
         note: `Implemented the requested change in a draft pull request (${committed.files.length} changed path${committed.files.length === 1 ? "" : "s"}).`,
+        expectedSha: committed.sha,
       });
       return {
         kind: "fix",
@@ -747,6 +808,28 @@ interface JobErrorClassification {
   message: string;
   retryable: boolean;
   delaySeconds?: number;
+}
+
+function failureForPublication(error: unknown): string {
+  if (error instanceof GitError) {
+    return "the isolated workspace or Git operation failed; see reviewbot status for detail";
+  }
+  if (error instanceof PublishError) {
+    return "GitHub rejected the publication; see reviewbot status for detail";
+  }
+  if (error instanceof ResultValidationError) {
+    return "the implementation result did not match the required format";
+  }
+  if (error instanceof TaskExecutionError) {
+    return "the OpenCode task failed; see reviewbot status for detail";
+  }
+  if (error instanceof OpenCodeUnavailableError) {
+    return "OpenCode was unavailable";
+  }
+  if (error instanceof PermanentJobError) {
+    return "the requested change could not be published; see reviewbot status for detail";
+  }
+  return "the implementation task failed; see reviewbot status for detail";
 }
 
 export function classifyJobError(error: unknown): JobErrorClassification {

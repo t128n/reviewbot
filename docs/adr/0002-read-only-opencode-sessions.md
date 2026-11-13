@@ -23,7 +23,7 @@ and `<server>_<tool>` for MCP tools.
 - Automatic tasks receive no edit, shell, execute, subagent, skill, webfetch, websearch,
   question, or MCP permission. `external_directory` remains denied. Reads of
   credential-shaped files (`.env`, private keys, credential stores) are also denied, as are
-  reads of Reviewbot's own credentials, database, and probe directories.
+  reads of Reviewbot's own credentials and database.
 - Explicit implementation tasks add `edit` permission but keep shell, execute, external
   directories, network access, and subagents denied. The daemon performs Git operations
   and GitHub publication.

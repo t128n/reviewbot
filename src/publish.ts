@@ -18,6 +18,7 @@ import {
   indexDiff,
   isValidLocation,
   normalizeRepoPath,
+  resolveDiffPath,
 } from "./diff.ts";
 import {
   PublicationMarker,
@@ -216,6 +217,10 @@ export class Publisher {
     }
 
     const index = indexDiff(input.diffFiles);
+    const resolvedFindings = findings.map((finding) => ({
+      ...finding,
+      path: resolveDiffPath(index, finding.path) ?? normalizeRepoPath(finding.path),
+    }));
     const inline: Array<{
       path: string;
       line: number;
@@ -225,7 +230,7 @@ export class Publisher {
     const summaryFindings: string[] = [];
     const publishedHashes: string[] = [];
 
-    for (const finding of findings) {
+    for (const finding of resolvedFindings) {
       const hash = findingHash(finding);
       if (this.store.hasFinding(input.repo.id, input.payload.pullNumber, hash)) {
         continue;
@@ -292,7 +297,7 @@ export class Publisher {
     this.recordPublishedFindings(
       input.repo.id,
       input.payload.pullNumber,
-      { summary: summaryText, findings },
+      { summary: summaryText, findings: resolvedFindings },
       publishedHashes,
     );
     this.store.markPullReviewed(
@@ -489,13 +494,15 @@ export class Publisher {
     }
   }
 
-  async publishFix(input: {    repo: RepositoryRecord;
+  async publishFix(input: {
+    repo: RepositoryRecord;
     payload: FixPayload;
     branch: string;
     base: string;
     title: string;
     body: string;
     note: string;
+    expectedSha: string;
   }): Promise<{ status: "published" | "duplicate"; number: number; htmlUrl: string }> {
     assertNoCredentialMaterial(input.title, input.body, input.note);
     const prMarker = PublicationMarker.fixPr(input.payload.commentId);
@@ -513,9 +520,12 @@ export class Publisher {
     let pull: { number: number; htmlUrl: string };
     let created = false;
     if (existing) {
-      if (existing.author !== this.botLogin) {
+      if (
+        existing.author !== this.botLogin ||
+        existing.headSha !== input.expectedSha
+      ) {
         throw new PublishError(
-          `Branch ${input.branch} already belongs to another pull request author`,
+          `Branch ${input.branch} does not match the expected Reviewbot commit`,
           true,
         );
       }
@@ -545,6 +555,19 @@ export class Publisher {
         kind: "fix-pr",
         githubId: pull.number,
       });
+    }
+
+    const publishedPull = await this.github.getPull(
+      octokit,
+      input.repo.owner,
+      input.repo.name,
+      pull.number,
+    );
+    if (publishedPull.headSha !== input.expectedSha) {
+      throw new PublishError(
+        "The draft pull request head does not match the committed change",
+        true,
+      );
     }
 
     const noteMarker = PublicationMarker.fix(input.payload.commentId);

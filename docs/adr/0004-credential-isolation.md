@@ -38,6 +38,7 @@ persistent repository configuration, and reserves all writes to the daemon.
 
 - Pushes and clones require the daemon to remain the actor; OpenCode cannot verify against
   GitHub or push by itself.
-- Windows ACL handling is best-effort and reported by `doctor` if it cannot be applied.
+- Windows ACL handling is applied during setup and setup fails if the ACL command cannot be
+  applied. `doctor` does not independently verify the effective ACL.
 - A compromised local operator account can read the App key; this is outside the threat
   model (the specification scopes the key to the local operator).

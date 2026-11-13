@@ -35,6 +35,7 @@ export const ConversationPayloadSchema = v.object({
   title: v.string(),
   path: v.optional(v.nullable(v.string())),
   line: v.optional(v.nullable(v.number())),
+  originalLine: v.optional(v.nullable(v.number())),
   diffHunk: v.optional(v.nullable(v.string())),
   inReplyToId: v.optional(v.nullable(v.number())),
 });

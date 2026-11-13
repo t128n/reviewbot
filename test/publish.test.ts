@@ -47,6 +47,7 @@ class FakeGitHub {
     htmlUrl: string;
     draft: boolean;
     author: string;
+    headSha: string;
   } | null = null;
   failNextReview = false;
 
@@ -266,7 +267,6 @@ describe("triage publication", () => {
         updatedAt: nowIso(),
         issueNumber: 4,
         htmlUrl: "",
-        pullRequestReviewId: null,
         path: null,
         line: null,
         originalLine: null,
@@ -297,7 +297,6 @@ describe("triage publication", () => {
         updatedAt: nowIso(),
         issueNumber: 3,
         htmlUrl: "",
-        pullRequestReviewId: null,
         path: null,
         line: null,
         originalLine: null,
@@ -536,6 +535,7 @@ describe("fix publication", () => {
       title: "Reviewbot: Issue",
       body: "Changes",
       note: "Implemented",
+      expectedSha: "head-1",
     });
     expect(first.status).toBe("published");
     expect(fake.createdPulls).toHaveLength(1);
@@ -548,6 +548,7 @@ describe("fix publication", () => {
       htmlUrl: "https://acme.ghe.com/acme/repo/pull/55",
       draft: true,
       author: "reviewbot[bot]",
+      headSha: "head-1",
     };
     const second = await publisher.publishFix({
       repo,
@@ -557,10 +558,42 @@ describe("fix publication", () => {
       title: "Reviewbot: Issue",
       body: "Changes",
       note: "Implemented",
+      expectedSha: "head-1",
     });
     expect(second.status).toBe("duplicate");
     expect(fake.createdPulls).toHaveLength(1);
     expect(fake.createdComments).toHaveLength(1);
+    store.close();
+  });
+});
+
+describe("fix publication", () => {
+  test("rejects a pull request head that does not match the committed SHA", async () => {
+    const { store, fake, publisher, repo } = setup();
+    fake.head = "different";
+    await expect(
+      publisher.publishFix({
+        repo,
+        payload: {
+          owner: "acme",
+          repo: "repo",
+          installationId: 1,
+          subjectType: "issue",
+          subjectNumber: 2,
+          commentId: 31,
+          channel: "issue",
+          body: "fix it",
+          author: "alice",
+          title: "Issue",
+        },
+        branch: "reviewbot/fix-issue-2-31",
+        base: "main",
+        title: "Reviewbot: Issue",
+        body: "Changes",
+        note: "Implemented",
+        expectedSha: "committed",
+      }),
+    ).rejects.toBeInstanceOf(PublishError);
     store.close();
   });
 });

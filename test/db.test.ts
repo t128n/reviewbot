@@ -92,6 +92,34 @@ describe("repository identity", () => {
     expect(store.listRepositories().length).toBe(2);
     store.close();
   });
+
+  test("starts a fresh baseline when a recreated repository takes an old name", () => {
+    const store = new Store(":memory:");
+    store.upsertRepository({
+      id: 1,
+      installationId: 1,
+      owner: "acme",
+      name: "repo",
+      fullName: "acme/repo",
+      defaultBranch: "main",
+      baseline: "2026-01-01T00:00:00.000Z",
+    });
+    expect(
+      store.upsertRepository({
+        id: 2,
+        installationId: 1,
+        owner: "acme",
+        name: "repo",
+        fullName: "acme/repo",
+        defaultBranch: "main",
+        baseline: "2026-06-01T00:00:00.000Z",
+      }),
+    ).toBe(true);
+    expect(store.getRepositoryByFullName("acme/repo")!.id).toBe(2);
+    expect(store.getRepository(1)!.active).toBe(false);
+    expect(store.listRepositories().length).toBe(1);
+    store.close();
+  });
 });
 
 describe("job lifecycle", () => {
@@ -162,7 +190,12 @@ describe("job lifecycle", () => {
   test("re-enqueues a permanently failed job when its trigger repeats", () => {
     const store = new Store(":memory:");
     const repoId = repo(store);
-    const input = { key: "k", kind: "triage" as const, repoId, payload: {} };
+    const input = {
+      key: "k",
+      kind: "triage" as const,
+      repoId,
+      payload: { issueNumber: 5 },
+    };
     store.enqueueJob(input);
     let job = store.claimNextJob()!;
     store.failJob(job.id, "permanent", { retryable: false });
@@ -171,6 +204,7 @@ describe("job lifecycle", () => {
     job = store.getJob(job.id)!;
     expect(job.state).toBe("queued");
     expect(job.attempts).toBe(0);
+    expect(JSON.parse(job.payload).issueNumber).toBe(5);
     store.close();
   });
 
@@ -220,6 +254,17 @@ describe("observation and idempotency state", () => {
     store.markPullReviewed(repoId, 7, "b");
     expect(store.hasReviewedHead(repoId, 7, "b")).toBe(true);
     expect(store.lastReviewedHead(repoId, 7)).toBe("b");
+    store.close();
+  });
+
+  test("binds a fix branch to the pushed commit", () => {
+    const store = new Store(":memory:");
+    const repoId = repo(store);
+    expect(store.getFixBranch(repoId, "reviewbot/fix-issue-1-2")).toBeNull();
+    store.recordFixBranch(repoId, "reviewbot/fix-issue-1-2", "a".repeat(40));
+    expect(store.getFixBranch(repoId, "reviewbot/fix-issue-1-2")).toBe(
+      "a".repeat(40),
+    );
     store.close();
   });
 

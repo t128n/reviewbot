@@ -197,7 +197,6 @@ function comment(
     updatedAt: created,
     issueNumber,
     htmlUrl: `https://acme.ghe.com/acme/repo/issues/${issueNumber}#issuecomment-${id}`,
-    pullRequestReviewId: null,
     path: null,
     line: null,
     originalLine: null,

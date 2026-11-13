@@ -5,6 +5,7 @@ import {
   isValidLocation,
   normalizeRepoPath,
   parsePatch,
+  resolveDiffPath,
   renderDiffContext,
 } from "../src/diff.ts";
 
@@ -35,7 +36,18 @@ describe("unified diff parsing", () => {
     expect(isValidLocation(index, "src/missing.ts", 3, "RIGHT")).toBe(false);
     expect(isValidLocation(index, "repo/src/a.ts", 2, "RIGHT")).toBe(true);
     expect(isValidLocation(index, "./src/a.ts", 2, "RIGHT")).toBe(true);
-    expect(normalizeRepoPath("repo\\src\\a.ts")).toBe("src/a.ts");
+    expect(normalizeRepoPath("repo\\src\\a.ts")).toBe("repo/src/a.ts");
+  });
+
+  test("resolves a wrapper prefix without corrupting a real repo/ directory", () => {
+    const normal = indexDiff([{ filename: "src/a.ts", status: "modified", patch }]);
+    expect(resolveDiffPath(normal, "repo/src/a.ts")).toBe("src/a.ts");
+    const withRepoDir = indexDiff([
+      { filename: "repo/a.ts", status: "modified", patch },
+      { filename: "a.ts", status: "modified", patch },
+    ]);
+    expect(resolveDiffPath(withRepoDir, "repo/a.ts")).toBe("repo/a.ts");
+    expect(resolveDiffPath(withRepoDir, "a.ts")).toBe("a.ts");
   });
 
   test("treats binary files as having no valid inline lines", () => {

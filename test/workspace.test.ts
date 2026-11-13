@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceManager, fixBranchName, gitAuthEnv, runGit } from "../src/workspace.ts";
 import { reposDir } from "../src/paths.ts";
+import type { RepositoryRecord } from "../src/db.ts";
 import type { Credentials } from "../src/config.ts";
 import type { Logger } from "../src/log.ts";
 
@@ -69,6 +70,46 @@ describe("worktree integrity guard", () => {
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("worktree repository binding", () => {
+  test("rejects Git metadata redirected to a sibling mirror", async () => {
+    mkdirSync(reposDir(), { recursive: true });
+    const id = 900000 + Math.floor(Math.random() * 10000);
+    const expected = join(reposDir(), `${id}-acme__repo.git`);
+    const other = join(reposDir(), `${id + 1}-acme__other.git`);
+    const wt = join(reposDir(), `binding-wt-${id}`);
+    try {
+      for (const dir of [expected, other]) {
+        mkdirSync(dir);
+        await runGit(["init", "-q"], { cwd: dir, host: "github.com" });
+        writeFileSync(join(dir, "a.txt"), dir);
+        await runGit(["add", "."], { cwd: dir, host: "github.com" });
+        await runGit(
+          ["-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "init"],
+          { cwd: dir, host: "github.com" },
+        );
+      }
+      await runGit(["worktree", "add", "--detach", wt, "HEAD"], {
+        cwd: expected,
+        host: "github.com",
+      });
+      writeFileSync(join(wt, ".git"), `gitdir: ${join(other, ".git")}\n`);
+      const repo = {
+        id,
+        owner: "acme",
+        name: "repo",
+      } as RepositoryRecord;
+      const manager = new WorkspaceManager({ credentials, logger });
+      await expect(manager.assertWorktreeIntegrity(wt, repo)).rejects.toThrow(
+        /different repository/,
+      );
+    } finally {
+      rmSync(expected, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+      rmSync(wt, { recursive: true, force: true });
     }
   });
 });

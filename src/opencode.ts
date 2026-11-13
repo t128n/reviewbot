@@ -50,7 +50,6 @@ export function sensitivePathRules(): PermissionRule[] {
   return [
     { action: "read", resource: `${base}/credentials/*`, effect: "deny" },
     { action: "read", resource: `${base}/reviewbot.db*`, effect: "deny" },
-    { action: "read", resource: `${base}/security-probe/*`, effect: "deny" },
     { action: "edit", resource: `${base}/credentials/*`, effect: "deny" },
     { action: "edit", resource: `${base}/reviewbot.db*`, effect: "deny" },
   ];

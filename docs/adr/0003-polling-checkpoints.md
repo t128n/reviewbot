@@ -25,10 +25,14 @@ requests. Timestamps have second precision and pagination windows can move.
 - New repositories and installations are initialized with cursors set to the discovery
   time. Existing open PRs are recorded as baseline state without enqueueing reviews.
   Events whose creation time is not after the repository baseline are ignored.
+- A temporary installation suspension retains cursors so work created during the suspension
+  is caught up after reactivation. It is not treated as a fresh repository baseline.
 - Exclude events authored by the installed App's own bot identity.
 - On rate limiting, stop the cycle, persist the reset time in SQLite, and resume later
   without advancing cursors. The persisted reset is honored after a daemon restart.
-- Use ETag conditional requests for the stable open-PR list. Issue and comment queries carry
+- Use ETag conditional requests for the stable open-PR list. The pull cursor and ETag are
+  committed in one update only after the list has been fully processed, so a crash cannot
+  advance the ETag without the checkpoint. Issue and comment queries carry
   a changing `since` window, so they rely on bounded overlap and idempotent job keys rather
   than conditional requests.
 

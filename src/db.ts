@@ -180,6 +180,14 @@ export class Store {
         PRIMARY KEY (repo_id, marker)
       );
 
+      CREATE TABLE IF NOT EXISTS fix_branches (
+        repo_id INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        sha TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (repo_id, branch)
+      );
+
       CREATE TABLE IF NOT EXISTS findings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         repo_id INTEGER NOT NULL,
@@ -198,7 +206,65 @@ export class Store {
         value TEXT NOT NULL
       );
     `);
-    this.db.exec("PRAGMA user_version = 1;");
+    this.applySchemaPatches();
+    this.db.exec("PRAGMA user_version = 2;");
+  }
+
+  /** Bring databases created by earlier development builds up to the current schema. */
+  private applySchemaPatches(): void {
+    const columns = (table: string) =>
+      this.db.query(`PRAGMA table_info(${table})`).all() as Array<{
+        name: string;
+        pk: number;
+      }>;
+
+    const repositoryColumns = columns("repositories");
+    if (!repositoryColumns.some((column) => column.name === "pulls_etag")) {
+      this.db.exec("ALTER TABLE repositories ADD COLUMN pulls_etag TEXT;");
+    }
+
+    const findingColumns = columns("findings");
+    if (!findingColumns.some((column) => column.name === "id")) {
+      this.db.exec(
+        `ALTER TABLE findings RENAME TO findings_legacy;
+         CREATE TABLE findings (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           repo_id INTEGER NOT NULL,
+           pr_number INTEGER NOT NULL,
+           hash TEXT NOT NULL,
+           path TEXT NOT NULL,
+           line INTEGER NOT NULL,
+           severity TEXT NOT NULL,
+           message TEXT NOT NULL,
+           created_at TEXT NOT NULL,
+           UNIQUE (repo_id, pr_number, hash)
+         );
+         INSERT INTO findings (repo_id, pr_number, hash, path, line, severity, message, created_at)
+           SELECT repo_id, pr_number, hash, path, line, severity, message, created_at FROM findings_legacy;
+         DROP TABLE findings_legacy;`,
+      );
+    }
+
+    const publicationColumns = columns("publications");
+    const composite = publicationColumns.some(
+      (column) => column.name === "repo_id" && column.pk > 0,
+    );
+    if (!composite) {
+      this.db.exec(
+        `ALTER TABLE publications RENAME TO publications_legacy;
+         CREATE TABLE publications (
+           repo_id INTEGER NOT NULL,
+           marker TEXT NOT NULL,
+           kind TEXT NOT NULL,
+           github_id TEXT,
+           created_at TEXT NOT NULL,
+           PRIMARY KEY (repo_id, marker)
+         );
+         INSERT INTO publications (repo_id, marker, kind, github_id, created_at)
+           SELECT repo_id, marker, kind, github_id, created_at FROM publications_legacy;
+         DROP TABLE publications_legacy;`,
+      );
+    }
   }
 
   // Installations
@@ -271,7 +337,8 @@ export class Store {
     baseline: string;
   }): boolean {
     const byName = this.getRepositoryByFullName(input.fullName);
-    if (byName) {
+    const byId = this.getRepository(input.id);
+    if (byName && byName.id === input.id) {
       this.db
         .query(
           `UPDATE repositories SET
@@ -287,22 +354,42 @@ export class Store {
           input.defaultBranch,
           byName.id,
         );
-      const byId = this.getRepository(input.id);
-      if (byId && byId.id !== byName.id) {
-        this.db
-          .query("UPDATE repositories SET active = 0 WHERE id = ?")
-          .run(byId.id);
-      }
       return false;
     }
 
-    const byId = this.getRepository(input.id);
-    if (byId) {
+    if (byName && byName.id !== input.id) {
+      // A repository was deleted and recreated under the same name. Preserve
+      // the dead row for history but free the unique name and start a fresh
+      // baseline for the new repository id.
+      this.db
+        .query(
+          "UPDATE repositories SET active = 0, full_name = full_name || '#stale-' || id WHERE id = ?",
+        )
+        .run(byName.id);
+      if (byId) {
+        this.db
+          .query(
+            `UPDATE repositories SET
+               installation_id = ?, owner = ?, name = ?, full_name = ?,
+               default_branch = ?, active = 1, pulls_etag = NULL
+             WHERE id = ?`,
+          )
+          .run(
+            input.installationId,
+            input.owner,
+            input.name,
+            input.fullName,
+            input.defaultBranch,
+            byId.id,
+          );
+        return false;
+      }
+    } else if (byId) {
       this.db
         .query(
           `UPDATE repositories SET
              installation_id = ?, owner = ?, name = ?, full_name = ?,
-             default_branch = ?, active = 1
+             default_branch = ?, active = 1, pulls_etag = NULL
            WHERE id = ?`,
         )
         .run(
@@ -364,24 +451,6 @@ export class Store {
     return rows.map(mapRepository);
   }
 
-  /** Re-establish the observation baseline after a reinstall or reactivation. */
-  resetBaseline(repoId: number, baseline: string): void {
-    this.db
-      .query(
-        `UPDATE repositories SET
-           initialized_at = ?,
-           issues_cursor = ?,
-           pulls_cursor = ?,
-           comments_cursor = ?,
-           review_comments_cursor = ?,
-           pulls_etag = NULL,
-           last_poll_at = NULL,
-           last_poll_error = NULL
-         WHERE id = ?`,
-      )
-      .run(baseline, baseline, baseline, baseline, baseline, repoId);
-  }
-
   setActive(repoId: number, active: boolean): void {
     this.db
       .query("UPDATE repositories SET active = ? WHERE id = ?")
@@ -411,6 +480,19 @@ export class Store {
     this.db
       .query("UPDATE repositories SET pulls_etag = ? WHERE id = ?")
       .run(etag, repoId);
+  }
+
+  /** Commit the pull checkpoint and its ETag together after a successful pass. */
+  setPullsCheckpoint(
+    repoId: number,
+    cursor: string,
+    etag: string | null,
+  ): void {
+    this.db
+      .query(
+        "UPDATE repositories SET pulls_cursor = ?, pulls_etag = ? WHERE id = ?",
+      )
+      .run(cursor, etag, repoId);
   }
 
   markPollSuccess(repoId: number, polledAt: string): void {
@@ -535,6 +617,7 @@ export class Store {
            key, kind, repo_id, payload, state, attempts, max_attempts, run_after, created_at
          ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET
+           payload = excluded.payload,
            state = 'queued',
            attempts = 0,
            run_after = excluded.run_after,
@@ -760,6 +843,27 @@ export class Store {
       severity: string;
       message: string;
     }>;
+  }
+
+  // Fix branch commit binding
+
+  recordFixBranch(repoId: number, branch: string, sha: string): void {
+    this.db
+      .query(
+        `INSERT INTO fix_branches (repo_id, branch, sha, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(repo_id, branch) DO UPDATE SET
+           sha = excluded.sha,
+           updated_at = excluded.updated_at`,
+      )
+      .run(repoId, branch, sha, nowIso());
+  }
+
+  getFixBranch(repoId: number, branch: string): string | null {
+    const row = this.db
+      .query("SELECT sha FROM fix_branches WHERE repo_id = ? AND branch = ?")
+      .get(repoId, branch) as { sha: string } | null;
+    return row?.sha ?? null;
   }
 
   // Metadata

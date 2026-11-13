@@ -148,6 +148,15 @@ describe("git credential isolation", () => {
     }
     const anonymous = gitAuthEnv("acme.ghe.com", null);
     expect(anonymous.GIT_CONFIG_VALUE_0).toBeUndefined();
+    const inherited = gitAuthEnv("acme.ghe.com", null, {
+      ...process.env,
+      GIT_CONFIG_COUNT: "5",
+      GIT_CONFIG_KEY_0: "http.https://evil.example/.extraheader",
+      GIT_CONFIG_VALUE_0: "Authorization: Basic secret",
+    });
+    expect(inherited.GIT_CONFIG_COUNT).toBe("0");
+    expect(inherited.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(inherited.GIT_CONFIG_VALUE_0).toBeUndefined();
   });
 });
 

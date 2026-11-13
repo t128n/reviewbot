@@ -222,7 +222,7 @@ claimed as passed without those resources.
 - `doctor` reports the permission boundary as `inconclusive`: OpenCode is unavailable or
   rejected a permission decision. Fix OpenCode connectivity; jobs stay queued.
 - Jobs are queued but not processed: run `reviewbot status` and `reviewbot doctor`; the
-  security gate or OpenCode availability is the usual cause.
+  permission gate or OpenCode availability is the usual cause.
 - Tasks fail with provider quota/auth errors: fix the model configuration in OpenCode.
   Reviewbot does not manage models or providers.
 - Permission checks fail: verify the installation still grants `metadata:read`,
@@ -247,7 +247,8 @@ claimed as passed without those resources.
 - Reviewbot verifies OpenCode permission decisions and observed an external-read denial, but
   it does not provide kernel-level isolation or audit plugin load paths inside the shared
   OpenCode process.
-- Windows credential ACLs are best-effort and not independently verified by `doctor`.
+- Windows credential ACLs are applied with `icacls`; `doctor` does not independently verify
+  the effective ACL.
 
 ## Project layout
 

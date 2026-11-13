@@ -20,9 +20,10 @@ sandbox; execution safety comes from the OpenCode permission ruleset.
   before execution and before push). OpenCode receives an `edit`-only session in the
   worktree; shell and test execution remain denied. If verification is impossible, the
   result and draft PR state that verification was not performed.
-- The daemon verifies that Git metadata still resolves inside its repository storage, stages
+- The daemon verifies that Git metadata resolves to the expected repository mirror, stages
   all changes, records the changed file list and diff stat, rejects unrequested CI-workflow
-  edits, commits on a new branch, pushes to the target repository, and opens a draft PR:
+  edits, commits on a new branch, pushes to the target repository, verifies the remote tip
+  equals the committed SHA, records that binding, and opens a draft PR:
   - issue request → branch from default branch, PR targets default branch;
   - PR request → branch from the original PR head, PR targets the original PR base and
     states that it includes the original PR's changes;

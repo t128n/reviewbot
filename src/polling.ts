@@ -76,10 +76,8 @@ export class Poller {
         continue;
       }
       activeIds.add(installation.id);
-      const previous = this.store.getInstallation(installation.id);
       this.store.upsertInstallation(installation);
-      const reactivated = previous?.suspended === true;
-      const enqueued = await this.pollInstallation(installation, result, reactivated);
+      const enqueued = await this.pollInstallation(installation, result);
       result.enqueued += enqueued;
     }
 
@@ -94,7 +92,6 @@ export class Poller {
   private async pollInstallation(
     installation: InstallationSummary,
     result: PollResult,
-    reactivated: boolean,
   ): Promise<number> {
     const octokit = await this.github.installationClient(installation.id, {
       metadata: "read",
@@ -128,10 +125,7 @@ export class Poller {
         defaultBranch: repo.defaultBranch,
         baseline,
       });
-      if (reactivated && !created) {
-        this.store.resetBaseline(repo.id, baseline);
-      }
-      if (created || reactivated) {
+      if (created) {
         result.initialized += 1;
         await this.initializeBaseline(repo.id, octokit);
         continue;
@@ -313,10 +307,9 @@ export class Poller {
       repo.pullsEtag,
     );
     if (result.notModified) {
-      this.store.setCursor(repo.id, "pulls", pollStart);
+      this.store.setPullsCheckpoint(repo.id, pollStart, result.etag);
       return 0;
     }
-    this.store.setPullsEtag(repo.id, result.etag);
     const pulls = result.pulls;
     for (const pull of pulls) {
       if (this.isSelf(pull.author, pull.authorType)) continue;
@@ -347,7 +340,7 @@ export class Poller {
       if (this.store.hasReviewedHead(repo.id, pull.number, pull.headSha)) continue;
       enqueued += this.enqueueReview(repo, pull, state.lastReviewedSha);
     }
-    this.store.setCursor(repo.id, "pulls", pollStart);
+    this.store.setPullsCheckpoint(repo.id, pollStart, result.etag);
     return enqueued;
   }
 
@@ -480,6 +473,7 @@ export class Poller {
       title,
       path: channel === "review" ? comment.path : null,
       line: channel === "review" ? comment.line : null,
+      originalLine: channel === "review" ? comment.originalLine : null,
       diffHunk: channel === "review" ? comment.diffHunk : null,
       inReplyToId: channel === "review" ? comment.inReplyToId : null,
     };

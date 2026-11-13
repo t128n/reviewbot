@@ -61,10 +61,23 @@ export function indexDiff(files: DiffFile[]): DiffIndex {
 }
 
 export function normalizeRepoPath(path: string): string {
-  return path
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/^repo\//, "");
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+/**
+ * Resolve a model-supplied path against the diff. The exact path wins; a
+ * leading `repo/` is stripped only when the checkout is addressed through the
+ * wrapper directory and no such repository path exists.
+ */
+export function resolveDiffPath(
+  index: DiffIndex,
+  path: string,
+): string | null {
+  const raw = normalizeRepoPath(path);
+  if (index.has(raw)) return raw;
+  const stripped = raw.replace(/^repo\//, "");
+  if (stripped !== raw && index.has(stripped)) return stripped;
+  return null;
 }
 
 export function isValidLocation(
@@ -73,8 +86,9 @@ export function isValidLocation(
   line: number,
   side: "LEFT" | "RIGHT",
 ): boolean {
-  const normalized = normalizeRepoPath(path);
-  const changed = index.get(normalized) ?? index.get(path);
+  const resolved = resolveDiffPath(index, path);
+  if (!resolved) return false;
+  const changed = index.get(resolved);
   if (!changed) return false;
   return side === "RIGHT" ? changed.right.has(line) : changed.left.has(line);
 }
