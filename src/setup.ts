@@ -42,13 +42,30 @@ export async function runSetup(logger: Logger): Promise<void> {
   let activeServer: ReturnType<typeof Bun.serve> | null = null;
   try {
     stdout.write("\nReviewbot setup\n===============\n\n");
-    const hostInput = await rl.question(
-      "GitHub host (github.com or acme.ghe.com): ",
-    );
-    const host = normalizeHost(hostInput);
-    const organization = (
-      await rl.question("Organization that will own the GitHub App: ")
-    ).trim();
+    let host: string;
+    while (true) {
+      const hostInput = await rl.question(
+        "GitHub host (github.com or acme.ghe.com): ",
+      );
+      try {
+        host = normalizeHost(hostInput);
+        break;
+      } catch {
+        stdout.write(
+          "Enter github.com or a *.ghe.com hostname (for example acme.ghe.com).\n",
+        );
+      }
+    }
+
+    let organization = "";
+    while (!organization) {
+      organization = (
+        await rl.question("Organization that will own the GitHub App: ")
+      ).trim();
+      if (!organization) {
+        stdout.write("An organization is required.\n");
+      }
+    }
     const defaultName =
       `reviewbot-${organization}`
         .toLowerCase()
