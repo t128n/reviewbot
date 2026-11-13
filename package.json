@@ -1,0 +1,28 @@
+{
+  "name": "reviewbot",
+  "version": "1.0.0",
+  "description": "GitHub App integration that dispatches issue triage and pull request reviews to an existing OpenCode service.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "reviewbot": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "dev": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@octokit/app": "16.1.4",
+    "@octokit/core": "7.0.8",
+    "@opencode/client": "2.3.0",
+    "commander": "15.1.0",
+    "pino": "10.4.0",
+    "valibot": "1.5.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}
