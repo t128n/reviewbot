@@ -17,6 +17,11 @@ The authoritative product specification is [`docs/specs/v1.1.md`](docs/specs/v1.
 which extends the implemented [`v1.0`](docs/specs/v1.0.md) baseline. Implementation plans and
 architectural decisions live in [`docs/plans`](docs/plans) and [`docs/adr`](docs/adr).
 
+## Documentation
+
+Operator documentation lives in [`docs/guide`](docs/guide): installation, setup, daemon
+operations, and deployment considerations.
+
 ## Requirements
 
 - Bun 1.4.4 or newer, only when running from source (release binaries embed Bun).
