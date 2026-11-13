@@ -166,7 +166,9 @@ export async function runSetup(logger: Logger): Promise<void> {
     });
 
     stdout.write(
-      `\nOpen this URL in a browser to create the organization-owned App:\n  http://127.0.0.1:${server.port}/\n\n`,
+      `\nOpen this URL in a browser to create the organization-owned App:\n  http://127.0.0.1:${server.port}/\n\n` +
+        'If Windows reports "Application not found", copy that URL into Edge, Chrome, or Firefox manually.\n' +
+        "The local setup listener is still running.\n\n",
     );
     openBrowser(`http://127.0.0.1:${server.port}/`);
     stdout.write(
@@ -329,17 +331,29 @@ function htmlResponse(body: string, status = 200): Response {
 }
 
 function openBrowser(url: string): void {
-  try {
-    const command =
-      process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : process.platform === "darwin"
-          ? ["open", url]
-          : ["xdg-open", url];
-    Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
-  } catch {
-    // The URL is printed for manual opening.
+  const commands =
+    process.platform === "win32"
+      ? [
+          ["cmd", "/c", "start", "", url],
+          ["rundll32", "url.dll,FileProtocolHandler", url],
+          ["explorer.exe", url],
+        ]
+      : process.platform === "darwin"
+        ? [["open", url]]
+        : [["xdg-open", url]];
+  for (const command of commands) {
+    try {
+      const result = Bun.spawnSync(command, {
+        stdout: "ignore",
+        stderr: "ignore",
+        timeout: 5000,
+      });
+      if (result.exitCode === 0) return;
+    } catch {
+      // Try the next handler.
+    }
   }
+  // The URL is printed for manual opening.
 }
 
 function serversClose(server: ReturnType<typeof Bun.serve>): void {
