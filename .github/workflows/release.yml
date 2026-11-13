@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: bun install --frozen-lockfile
+      - run: bun run check:release-version "$GITHUB_REF_NAME"
+
+  build:
+    name: build (${{ matrix.asset }})
+    needs: [verify, version]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: X64
+            target: bun-linux-x64
+            asset: reviewbot-linux-x64
+          - runner: ubuntu-24.04-arm
+            arch: ARM64
+            target: bun-linux-arm64
+            asset: reviewbot-linux-arm64
+          - runner: macos-latest
+            arch: ARM64
+            target: bun-darwin-arm64
+            asset: reviewbot-darwin-arm64
+          - runner: macos-latest
+            arch: X64
+            target: bun-darwin-x64
+            asset: reviewbot-darwin-x64
+          - runner: windows-latest
+            arch: X64
+            target: bun-windows-x64
+            asset: reviewbot-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: bun install --frozen-lockfile
+      - name: Build standalone binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd src
+          bun build --compile --target=${{ matrix.target }} \
+            --asset=./prompt.md --asset=./prompts \
+            --outfile=../dist/${{ matrix.asset }} ./cli.ts
+      - name: Smoke test native binary
+        if: matrix.arch == runner.arch
+        shell: bash
+        run: ./dist/${{ matrix.asset }} --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum reviewbot-* > SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            args=(--title "Reviewbot $GITHUB_REF_NAME" --generate-notes)
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
+          fi

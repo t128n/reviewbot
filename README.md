@@ -1,5 +1,7 @@
 # Reviewbot
 
+[![CI](https://github.com/t128n/reviewbot/actions/workflows/ci.yml/badge.svg)](https://github.com/t128n/reviewbot/actions/workflows/ci.yml)
+
 Reviewbot connects GitHub repositories to an existing [OpenCode](https://opencode.ai) V2
 service. It provides automatic issue triage and pull request reviews, plus authorized
 conversational follow-ups and explicitly requested draft pull requests.
@@ -17,7 +19,7 @@ architectural decisions live in [`docs/plans`](docs/plans) and [`docs/adr`](docs
 
 ## Requirements
 
-- Bun 1.4 or newer (the runtime and test runner).
+- Bun 1.4.4 or newer, only when running from source (release binaries embed Bun).
 - Git on `PATH`.
 - An existing, running OpenCode V2 service (2.2.0 or newer; tested with 2.2.7 and
   `@opencode/client` 2.3.0). Reviewbot discovers the registered local service or connects
@@ -34,7 +36,34 @@ access tokens or `gh auth`, and `gh` is not required.
 
 ## Install
 
+Install the released binary with [mise](https://mise.jdx.dev):
+
 ```bash
+mise use -g github:t128n/reviewbot@latest
+reviewbot --version
+```
+
+Pin a version, or install for a single command without changing global configuration:
+
+```bash
+mise use -g github:t128n/reviewbot@1.1.0
+mise x github:t128n/reviewbot@1.1.0 -- reviewbot --version
+```
+
+Upgrade with `mise upgrade reviewbot`. Releases are standalone binaries for Linux (x64 and
+arm64, glibc), macOS (Intel and Apple silicon), and Windows (x64). The macOS and Windows
+binaries are not code-signed, so the operating system may ask for confirmation on first
+launch.
+
+mise must be activated in the shell (`mise activate`) for the `reviewbot` command to be on
+`PATH`; `mise x` works without activation.
+
+### From source
+
+Source installs require Bun 1.4.4 and Git on `PATH`:
+
+```bash
+mise install
 bun install
 bun link        # optional: makes the `reviewbot` command available
 ```
@@ -272,6 +301,28 @@ External acceptance tests (AC-01 through AC-20 from v1.0 and AC-21 through AC-41
 require a dedicated organization and test repository on `acme.ghe.com`, an installed App, and
 working model quota. They are not claimed as passed without those resources.
 
+CI runs the type check and unit tests on Ubuntu and Windows. The release workflow builds and
+smoke-tests the standalone binaries before publishing.
+
+## Releases
+
+Releases are tag-driven. Tags publish standalone binaries and `SHA256SUMS` to GitHub Releases;
+mise installs them through its `github:` backend.
+
+1. Set the same `X.Y.Z` version in `package.json` and `src/config.ts` (`REVIEWBOT_VERSION`).
+2. Commit and merge the version change to `main`.
+3. Tag that commit and push the tag:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+The release workflow verifies the tag against both version fields, runs CI, builds the
+binaries for Linux, macOS, and Windows, and creates the GitHub release. A prerelease suffix
+(for example `v1.1.0-rc.1`) publishes a GitHub prerelease, which mise does not select by
+default.
+
 ## Troubleshooting
 
 - `setup` times out before the callback: organization policy may prohibit App creation, or
@@ -319,6 +370,8 @@ working model quota. They are not claimed as passed without those resources.
 ## Project layout
 
 ```
+scripts/
+  check-release-version.ts  Release tag and packaged version consistency check
 src/
   cli.ts        Commander entrypoint (setup, run, status, doctor)
   daemon.ts     Foreground polling and single-worker loops
