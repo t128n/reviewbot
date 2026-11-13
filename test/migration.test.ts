@@ -58,7 +58,7 @@ describe("schema migration", () => {
       const store = new Store(path);
       expect(store.hasPublication(1, "m")).toBe(true);
       expect(store.listFindings(1, 4)).toHaveLength(1);
-      store.setPullsEtag(1, "etag");
+      store.setPullsCheckpoint(1, "2026-02-01T00:00:00.000Z", "etag");
       expect(store.getRepository(1)!.pullsEtag).toBe("etag");
       expect(store.recordPublication({
         marker: "m",

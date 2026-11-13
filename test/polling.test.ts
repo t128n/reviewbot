@@ -416,7 +416,7 @@ describe("conditional requests", () => {
       defaultBranch: "main",
       baseline,
     });
-    store.setPullsEtag(1, "etag");
+    store.setPullsCheckpoint(1, baseline, "etag");
     fake.state.notModified = true;
     const poller = makePoller(store, fake);
     await poller.pollOnce();

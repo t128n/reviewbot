@@ -476,12 +476,6 @@ export class Store {
       .run(value, repoId);
   }
 
-  setPullsEtag(repoId: number, etag: string | null): void {
-    this.db
-      .query("UPDATE repositories SET pulls_etag = ? WHERE id = ?")
-      .run(etag, repoId);
-  }
-
   /** Commit the pull checkpoint and its ETag together after a successful pass. */
   setPullsCheckpoint(
     repoId: number,
