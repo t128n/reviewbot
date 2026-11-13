@@ -64,6 +64,17 @@ export function sessionRules(mode: "read" | "implement"): PermissionRule[] {
 
 export type OpenCodeClient = ReturnType<typeof OpenCode.make>;
 
+export function parseModelRef(
+  value: string,
+): { providerID: string; id: string } | null {
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash === value.length - 1) return null;
+  const providerID = value.slice(0, slash);
+  const id = value.slice(slash + 1);
+  if (!providerID || !id || /\s/.test(value)) return null;
+  return { providerID, id };
+}
+
 export class OpenCodeUnavailableError extends Error {
   constructor(message: string) {
     super(redactText(message));
@@ -136,14 +147,20 @@ export function isCompatibleServer(version: string): boolean {
 
 export class OpenCodeAdapter {
   private readonly configuredUrl: string | null;
+  private readonly configuredModel: string | null;
   private readonly logger: Logger;
   private cached: { client: OpenCodeClient; url: string; version: string } | null =
     null;
   private readonly activeSessions = new Set<string>();
   private cachedAt = 0;
 
-  constructor(options: { url: string | null; logger: Logger }) {
+  constructor(options: {
+    url: string | null;
+    model: string | null;
+    logger: Logger;
+  }) {
     this.configuredUrl = options.url;
+    this.configuredModel = options.model;
     this.logger = options.logger;
   }
 
@@ -204,9 +221,25 @@ export class OpenCodeAdapter {
     return this.cached;
   }
 
+  async modelAvailable(value: string): Promise<boolean> {
+    const ref = parseModelRef(value);
+    if (!ref) return false;
+    const { client } = await this.connect();
+    const models = await client.model.list({ location: { directory: process.cwd() } });
+    return models.data.some(
+      (model) =>
+        model.enabled &&
+        model.providerID === ref.providerID &&
+        (model.modelID === ref.id || model.id === ref.id),
+    );
+  }
+
   async createSession(options: SessionOptions): Promise<string> {
     const { client } = await this.connect();
     const permissions = sessionRules(options.mode);
+    const model = this.configuredModel
+      ? parseModelRef(this.configuredModel)
+      : null;
     let session;
     try {
       session = await client.session.create(
@@ -214,6 +247,7 @@ export class OpenCodeAdapter {
           title: options.title,
           location: { directory: options.directory },
           permissions,
+          ...(model ? { model } : {}),
         },
         { signal: AbortSignal.timeout(30_000) },
       );

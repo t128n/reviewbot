@@ -28,6 +28,7 @@ export async function runDaemon(options: {
   const app = await github.appInfo();
   const adapter = new OpenCodeAdapter({
     url: config.opencode.url,
+    model: config.opencode.model,
     logger,
   });
   const workspace = new WorkspaceManager({ credentials, logger });
@@ -84,7 +85,12 @@ export async function runDaemon(options: {
   });
 
   logger.info(
-    { host: config.github.host, interval: config.polling.intervalSeconds, app: app.slug },
+    {
+      host: config.github.host,
+      interval: config.polling.intervalSeconds,
+      app: app.slug,
+      model: config.opencode.model ?? "opencode-default",
+    },
     "reviewbot daemon started",
   );
 

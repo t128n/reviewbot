@@ -3,6 +3,7 @@ import {
   IMPLEMENT_RULES,
   READ_ONLY_RULES,
   isCompatibleServer,
+  parseModelRef,
   parseVersion,
   sessionRules,
   sessionTurnComplete,
@@ -93,6 +94,23 @@ describe("OpenCode permissions", () => {
     expect(gateIsOpen({ status: "inconclusive" } as never)).toBe(false);
     expect(gateIsOpen({ status: "not-enforced" } as never)).toBe(false);
     expect(gateIsOpen({ status: "enforced" } as never)).toBe(true);
+  });
+});
+
+describe("model reference parsing", () => {
+  test("splits provider and model at the first slash", () => {
+    expect(parseModelRef("opencode-go/deepseek-v4.1-flash")).toEqual({
+      providerID: "opencode-go",
+      id: "deepseek-v4.1-flash",
+    });
+    expect(parseModelRef("openrouter/anthropic/claude")).toEqual({
+      providerID: "openrouter",
+      id: "anthropic/claude",
+    });
+    expect(parseModelRef("missing-slash")).toBeNull();
+    expect(parseModelRef("/missing-provider")).toBeNull();
+    expect(parseModelRef("provider/")).toBeNull();
+    expect(parseModelRef("provider/model with space")).toBeNull();
   });
 });
 

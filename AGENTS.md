@@ -29,6 +29,9 @@ organization; do not use production repositories for experiments.
   reasoning, tools, models, and sessions.
 - Use the existing OpenCode V2 service via `@opencode/client`. Never spawn, replace, or
   manage an OpenCode runtime.
+- `opencode.model` is a single optional fixed `provider/model` override for Reviewbot
+  sessions. Do not add per-task routing, agent selection, provider management, or fallback
+  models.
 - Use Octokit and `@octokit/app` for every GitHub operation. Do not add `gh` or personal
   access token dependencies.
 - Keep the daemon as the only actor that holds credentials or performs GitHub writes.

@@ -88,14 +88,17 @@ Configuration is a single global file:
 {
   "github": { "host": "acme.ghe.com" },
   "polling": { "intervalSeconds": 60 },
-  "opencode": { "url": null }
+  "opencode": { "url": null, "model": null }
 }
 ```
 
 A null OpenCode URL discovers the registered local service. To connect to an explicit
 authenticated service, set `opencode.url` and provide `OPENCODE_SERVER_PASSWORD` in the
-environment (basic auth user `opencode`). There is no repository-specific Reviewbot
-configuration. Model selection and development settings remain under OpenCode's control.
+environment (basic auth user `opencode`). `opencode.model` is optional: set it to
+`providerID/modelID` (for example `opencode-go/deepseek-v4.1-flash`) to use a fixed model for
+Reviewbot sessions, or leave it `null` to use OpenCode's default. OpenCode still owns
+provider registration, credentials, model enablement, and execution; Reviewbot does not route
+models per task or select agents. There is no repository-specific Reviewbot configuration.
 One GitHub host is supported per configuration.
 
 Default locations:
@@ -194,6 +197,9 @@ logs, or repository configuration. A Git worktree is not a sandbox; the OpenCode
 ruleset is the execution boundary.
 
 ## Logging
+
+`reviewbot status` shows the configured model (or `OpenCode default`). `reviewbot doctor`
+verifies that a configured model is enabled and available.
 
 `LOG_LEVEL` controls daemon log verbosity (`debug`, `info`, `warn`, `error`). Logs go to
 stderr; credential-shaped values are redacted.

@@ -44,6 +44,7 @@ program
     const status = await collectStatus(logger);
     const lines = [
       `GitHub host:        ${status.host ?? "not configured"}`,
+      `OpenCode model:     ${status.model ?? "OpenCode default"}`,
       `OpenCode:           ${status.opencode}`,
       `Installations:      ${status.installations} active`,
       `Repositories:       ${status.repositories}`,

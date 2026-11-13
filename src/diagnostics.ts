@@ -157,6 +157,7 @@ export async function runDoctor(
   if (config) {
     const adapter = new OpenCodeAdapter({
       url: config.opencode.url,
+      model: config.opencode.model,
       logger,
     });
     try {
@@ -166,6 +167,20 @@ export async function runDoctor(
         "ok",
         `${connection.url} (OpenCode ${connection.version}, client 2.3.0)`,
       );
+      if (config.opencode.model) {
+        try {
+          const available = await adapter.modelAvailable(config.opencode.model);
+          add(
+            "OpenCode model",
+            available ? "ok" : "fail",
+            available
+              ? config.opencode.model
+              : `${config.opencode.model} is not an enabled model available to OpenCode`,
+          );
+        } catch (error) {
+          add("OpenCode model", "fail", message(error));
+        }
+      }
       add(
         "OpenCode compatibility",
         isCompatibleServer(connection.version) ? "ok" : "fail",
@@ -209,6 +224,7 @@ function requiredPermissions(): string[] {
 
 export interface StatusReport {
   host: string | null;
+  model: string | null;
   opencode: string;
   installations: number;
   repositories: number;
@@ -229,7 +245,11 @@ export async function collectStatus(logger: Logger): Promise<StatusReport> {
   }
   let opencode = "not connected";
   if (config) {
-    const adapter = new OpenCodeAdapter({ url: config.opencode.url, logger });
+    const adapter = new OpenCodeAdapter({
+      url: config.opencode.url,
+      model: config.opencode.model,
+      logger,
+    });
     try {
       const connection = await adapter.connect();
       opencode = `${connection.url} (OpenCode ${connection.version})`;
@@ -240,6 +260,7 @@ export async function collectStatus(logger: Logger): Promise<StatusReport> {
 
   const report: StatusReport = {
     host: config?.github.host ?? null,
+    model: config?.opencode.model ?? null,
     opencode,
     installations: 0,
     repositories: 0,

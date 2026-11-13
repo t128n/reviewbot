@@ -23,6 +23,14 @@ const HostSchema = v.pipe(
   ),
 );
 
+const OpenCodeModelSchema = v.pipe(
+  v.string(),
+  v.regex(
+    /^[^/\s]+\/\S+$/,
+    "OpenCode model must be provider/model (for example opencode-go/deepseek-v4.1-flash)",
+  ),
+);
+
 export const ConfigSchema = v.object({
   github: v.object({
     host: HostSchema,
@@ -37,6 +45,7 @@ export const ConfigSchema = v.object({
   }),
   opencode: v.object({
     url: v.nullable(v.pipe(v.string(), v.url())),
+    model: v.optional(v.nullable(OpenCodeModelSchema), null),
   }),
 });
 
@@ -61,7 +70,7 @@ export type Credentials = v.InferOutput<typeof CredentialsSchema>;
 export const DEFAULT_CONFIG: Config = {
   github: { host: "github.com" },
   polling: { intervalSeconds: 60 },
-  opencode: { url: null },
+  opencode: { url: null, model: null },
 };
 
 /** Normalize and validate a configured GitHub host. */

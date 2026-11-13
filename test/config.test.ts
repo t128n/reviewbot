@@ -45,6 +45,7 @@ describe("configuration persistence", () => {
           ...DEFAULT_CONFIG,
           github: { host: "acme.ghe.com" },
           polling: { intervalSeconds: 120 },
+          opencode: { url: null, model: "opencode-go/deepseek-v4.1-flash" },
         },
         path,
       );
@@ -52,6 +53,25 @@ describe("configuration persistence", () => {
       expect(loaded.github.host).toBe("acme.ghe.com");
       expect(loaded.polling.intervalSeconds).toBe(120);
       expect(loaded.opencode.url).toBeNull();
+      expect(loaded.opencode.model).toBe("opencode-go/deepseek-v4.1-flash");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an invalid OpenCode model reference", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reviewbot-config-"));
+    try {
+      const path = join(dir, "config.json");
+      expect(() =>
+        saveConfig(
+          {
+            ...DEFAULT_CONFIG,
+            opencode: { url: null, model: "not-a-model" },
+          },
+          path,
+        ),
+      ).toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
