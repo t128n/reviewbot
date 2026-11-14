@@ -339,7 +339,9 @@ interface DiscoveryFakeState {
   searchResults: IssueSummary[];
   recent: IssueSummary[];
   failSearch?: boolean;
+  failGraphql?: boolean;
   comments?: Record<number, CommentSummary[]>;
+  nodeOverrides?: Record<number, Record<string, unknown>>;
 }
 
 class DiscoveryFake {
@@ -349,6 +351,57 @@ class DiscoveryFake {
 
   constructor(state: DiscoveryFakeState) {
     this.state = state;
+  }
+
+  private findIssue(number: number): IssueSummary | undefined {
+    return (
+      this.state.issues.find((item) => item.number === number) ??
+      this.state.searchResults.find((item) => item.number === number) ??
+      this.state.recent.find((item) => item.number === number)
+    );
+  }
+
+  async graphql<T = unknown>(
+    _octokit: unknown,
+    _query: string,
+    variables: Record<string, string | number> = {},
+  ): Promise<T> {
+    if (this.state.failGraphql) {
+      throw Object.assign(new Error("graphql unavailable"), { status: 502 });
+    }
+    const number = Number(variables.n ?? 0);
+    this.fetched.push(number);
+    const found = this.findIssue(number);
+    const override = this.state.nodeOverrides?.[number];
+    if (!found && !override) {
+      return { data: { repository: { issueOrPullRequest: null } } } as T;
+    }
+    const comments = (this.state.comments?.[number] ?? []).map((c) => ({
+      body: c.body,
+      author: { login: c.author },
+    }));
+    const base = found
+      ? {
+          __typename: found.isPullRequest ? "PullRequest" : "Issue",
+          title: found.title,
+          state: found.state.toUpperCase(),
+          url: found.htmlUrl,
+          body: found.body ?? "",
+          author: { login: found.author },
+          createdAt: found.createdAt,
+          reactions: { totalCount: 0 },
+          participants: { totalCount: 1 },
+          comments: { totalCount: comments.length, nodes: comments },
+          timelineItems: { nodes: [] },
+        }
+      : {};
+    return {
+      data: {
+        repository: {
+          issueOrPullRequest: { ...base, ...override },
+        },
+      },
+    } as T;
   }
 
   async getIssue(
@@ -409,7 +462,7 @@ describe("bounded duplicate discovery", () => {
     const result = await discoverDuplicateCandidates({
       github: fake as unknown as Pick<
         GitHub,
-        "searchIssues" | "getIssue" | "listRecentIssues" | "listIssueCommentsLimited"
+        "graphql" | "searchIssues" | "listRecentIssues"
       >,
       octokit: {} as GitHubClient,
       owner,
@@ -469,5 +522,133 @@ describe("bounded duplicate discovery", () => {
     expect(result.candidates.length).toBeLessThanOrEqual(20);
     expect(result.candidates.some((candidate) => candidate.number === 2)).toBe(false);
     expect(fake.searched.some((query) => query.includes("is:closed"))).toBe(true);
+  });
+
+  test("discovers 1-hop graph neighbors, PR verdicts, mentionedBy, and file overlaps", async () => {
+    const fake = discoveryHarness({
+      issues: [
+        issue(10, { title: "Session drops on reconnect" }),
+        issue(11, { title: "Reconnect loses session", body: "Related to #10" }),
+        issue(12, {
+          title: "fix: keep session on reconnect",
+          isPullRequest: true,
+          state: "closed",
+        }),
+        issue(13, {
+          title: "alt: preserve session on reconnect",
+          isPullRequest: true,
+          state: "open",
+        }),
+        issue(14, {
+          title: "refactor: session store",
+          isPullRequest: true,
+          state: "open",
+        }),
+      ],
+      searchResults: [],
+      recent: [],
+      nodeOverrides: {
+        10: {
+          reactions: { totalCount: 5 },
+          participants: { totalCount: 3 },
+          comments: {
+            totalCount: 2,
+            nodes: [
+              { body: "Same as #11", author: { login: "alice" } },
+              { body: "See PR #13", author: { login: "bob" } },
+            ],
+          },
+          timelineItems: {
+            nodes: [
+              {
+                createdAt: "2026-11-12T00:00:00Z",
+                actor: { login: "carol" },
+                source: {
+                  __typename: "PullRequest",
+                  number: 12,
+                  repository: { owner: { login: owner }, name: repo },
+                },
+              },
+              {
+                createdAt: "2026-11-12T01:00:00Z",
+                actor: { login: "dave" },
+                source: {
+                  __typename: "PullRequest",
+                  number: 14,
+                  repository: { owner: { login: owner }, name: repo },
+                },
+              },
+            ],
+          },
+        },
+        12: {
+          state: "MERGED",
+          mergedAt: "2026-11-12T02:00:00Z",
+          closingIssuesReferences: {
+            nodes: [{ number: 11, repository: { owner: { login: owner }, name: repo } }],
+          },
+          files: { nodes: [{ path: "src/session.ts", changeType: "MODIFIED" }] },
+        },
+        13: {
+          state: "OPEN",
+          closingIssuesReferences: {
+            nodes: [{ number: 11, repository: { owner: { login: owner }, name: repo } }],
+          },
+          files: { nodes: [{ path: "src/session.ts", changeType: "MODIFIED" }] },
+        },
+        14: {
+          state: "OPEN",
+          files: { nodes: [{ path: "src/session.ts", changeType: "MODIFIED" }] },
+        },
+      },
+    });
+
+    const result = await discoverDuplicateCandidates({
+      github: fake as unknown as Pick<
+        GitHub,
+        "graphql" | "searchIssues" | "listRecentIssues"
+      >,
+      octokit: {} as GitHubClient,
+      owner,
+      repo,
+      current: issue(10, {
+        title: "Session drops on reconnect",
+        body: "Happens after idle timeout",
+      }),
+      currentComments: [],
+      logger,
+      now: new Date("2026-11-14T00:00:00Z"),
+    });
+
+    const numbers = result.candidates.map((c) => c.number);
+    expect(numbers).toEqual(expect.arrayContaining([11, 12, 13, 14]));
+    const pr13 = result.candidates.find((c) => c.number === 13);
+    expect(pr13?.verdict).toContain("SUPERSEDED by merged acme/repo#12");
+    expect(pr13?.mentionedBy).toContain("bob");
+    expect(result.overlaps.length).toBeGreaterThanOrEqual(1);
+    expect(result.overlaps[0]?.shared).toContain("src/session.ts");
+  });
+
+  test("degrades gracefully when GraphQL crawl fails", async () => {
+    const fake = discoveryHarness({
+      issues: [issue(1)],
+      searchResults: [issue(1)],
+      recent: [],
+      failGraphql: true,
+    });
+    const result = await discoverDuplicateCandidates({
+      github: fake as unknown as Pick<
+        GitHub,
+        "graphql" | "searchIssues" | "listRecentIssues"
+      >,
+      octokit: {} as GitHubClient,
+      owner,
+      repo,
+      current: issue(2, { title: "Crash on startup", body: "duplicate of #1" }),
+      currentComments: [],
+      logger,
+    });
+    expect(result.searchUnavailable).toBe(true);
+    expect(result.candidates.map((c) => c.number)).toContain(1);
   });
 });

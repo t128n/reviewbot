@@ -1,6 +1,6 @@
 {
   "name": "reviewbot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "GitHub App integration that dispatches issue triage and pull request reviews to an existing OpenCode service.",
   "type": "module",
   "private": true,
@@ -19,6 +19,7 @@
     "@octokit/core": "7.0.8",
     "@opencode/client": "2.3.0",
     "commander": "15.1.0",
+    "issue-graph": "^0.6.1",
     "pino": "10.4.0",
     "valibot": "1.5.0"
   },

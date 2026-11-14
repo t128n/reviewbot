@@ -9,6 +9,7 @@
         "@octokit/core": "7.0.8",
         "@opencode/client": "2.3.0",
         "commander": "15.1.0",
+        "issue-graph": "^0.6.1",
         "pino": "10.4.0",
         "valibot": "1.5.0",
       },
@@ -88,6 +89,8 @@
     "content-type": ["content-type@3.1.1", "", {}, "sha512-GW4qUsfFo59d0HbUibDlWv5wPz+vAAcaTWbKIuKCf0JkC7wWkSyf8f13IpXn5JkeMlB2P8iTSSIjwXljorg2vA=="],
 
     "effect": ["effect@4.1.0", "", {}, "sha512-lGx2MJJyrXA8RZb2UpQ/0Nkb5Utaimby7oD92+18noBxLPE85IFOvptdzau8dvcxAOwfwHo9iqapbKeFzqQM/Q=="],
+
+    "issue-graph": ["issue-graph@0.6.1", "", { "bin": { "issue-graph": "dist/bin.js" } }, "sha512-kM7MkmnyXPXLZBjn4ZNrin+R1+KCMr2c8P8rCHVDJq8EUtfib1bRowy6HTtj1gZ2WQbhCMdYC5vA+BeyuUTwng=="],
 
     "json-with-bigint": ["json-with-bigint@3.5.12", "", {}, "sha512-uwbF/wSSuOgC7qqlq27Xp5B6a2MHVug3t0idZdTqu0JnlFvgJuH7ju+KAk/J06C7GfhoYy2gnb9wz2INqcne7w=="],
 

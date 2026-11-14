@@ -37,7 +37,11 @@ import {
 import type { WorkspaceManager } from "./workspace.ts";
 import { GitError, fixBranchName } from "./workspace.ts";
 import { renderDiffContext, type DiffFile } from "./diff.ts";
-import { discoverDuplicateCandidates } from "./duplicate-discovery.ts";
+import {
+  discoverDuplicateCandidates,
+  type DuplicateCandidate,
+  type DuplicateOverlap,
+} from "./duplicate-discovery.ts";
 import {
   DuplicateLifecycle,
   type ReassessmentRequest,
@@ -337,8 +341,8 @@ export class Worker {
         "",
         discovery.searchUnavailable || discovery.recentUnavailable
           ? "Duplicate search was partially unavailable. Treat the supplied candidates as incomplete and do not infer a duplicate that is not supported by them."
-          : "Duplicate candidates supplied by bounded repository search and direct references:",
-        this.formatCandidates(discovery.candidates),
+          : "Duplicate and related-work candidates supplied by bounded issue-graph crawl and direct references:",
+        this.formatCandidates(discovery.candidates, discovery.overlaps),
         "",
         "Investigate this issue against the repository. Determine whether an existing issue is the same report, a likely duplicate, related, or independent. Compare actual content, symptoms, and discussion; a similar title or a citation alone is not proof.",
         "The daemon publishes your comment. For a duplicate decision, explain the match concisely and do not state closure timing; the daemon appends the 24-hour disclosure. For likely_duplicate, ask one targeted question about a difference in behavior, reproduction, environment, or expected result.",
@@ -380,44 +384,61 @@ export class Worker {
   }
 
   private formatCandidates(
-    candidates: Array<{
-      number: number;
-      title: string;
-      body: string;
-      state: string;
-      isPullRequest: boolean;
-      createdAt: string;
-      referenced: boolean;
-      comments: Array<{ author: string; body: string }>;
-    }>,
+    candidates: DuplicateCandidate[],
+    overlaps: DuplicateOverlap[] = [],
   ): string {
     if (candidates.length === 0) {
       return "No same-repository candidate issues were retrieved.";
     }
-    const text = candidates
-      .map((candidate) => {
-        const flags = [
-          candidate.referenced ? "explicitly referenced" : null,
-          candidate.isPullRequest ? "pull request" : null,
-        ].filter(Boolean);
-        const lines = [
-          `### Issue #${candidate.number} [${candidate.state}]${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`,
-          `Title: ${candidate.title}`,
-          `Created: ${candidate.createdAt}`,
-          `Body: ${candidate.body || "(no description)"}`,
-        ];
-        if (candidate.comments.length > 0) {
-          lines.push("Relevant comments:");
-          lines.push(
-            ...candidate.comments.map(
-              (comment) =>
-                `- ${comment.author}: ${comment.body.replace(/\s+/g, " ")}`,
-            ),
-          );
-        }
-        return lines.join("\n");
-      })
-      .join("\n\n");
+    const sections = candidates.map((candidate) => {
+      const flags = [
+        candidate.referenced ? "explicitly referenced" : null,
+        candidate.isPullRequest ? "pull request" : null,
+        `depth ${candidate.depth}`,
+        `heat ${candidate.score}`,
+        candidate.verdict ? `verdict: ${candidate.verdict}` : null,
+      ].filter(Boolean);
+      const lines = [
+        `### ${candidate.isPullRequest ? "PR" : "Issue"} #${candidate.number} [${candidate.state}] (${flags.join(", ")})`,
+        `Title: ${candidate.title}`,
+        `Created: ${candidate.createdAt}`,
+      ];
+      if (candidate.flags.length > 0) {
+        lines.push(`Graph flags: ${candidate.flags.join(", ")}`);
+      }
+      if (candidate.edges.length > 0) {
+        lines.push(`Graph edges: ${candidate.edges.slice(0, 8).join(", ")}`);
+      }
+      if (candidate.mentionedBy.length > 0) {
+        lines.push(`Mentioned by: ${candidate.mentionedBy.slice(0, 8).join(", ")}`);
+      }
+      lines.push(`Body: ${candidate.body || "(no description)"}`);
+      if (candidate.comments.length > 0) {
+        lines.push("Relevant comments:");
+        lines.push(
+          ...candidate.comments.map(
+            (comment) =>
+              `- ${comment.author}: ${comment.body.replace(/\s+/g, " ")}`,
+          ),
+        );
+      }
+      return lines.join("\n");
+    });
+
+    if (overlaps.length > 0) {
+      sections.push(
+        [
+          "### Overlapping open PRs",
+          ...overlaps.slice(0, 6).map((overlap) => {
+            const shared = overlap.shared.slice(0, 5).join(", ");
+            const suffix = overlap.sharedIssue ? ` (both close ${overlap.sharedIssue})` : "";
+            return `- ${overlap.a} <-> ${overlap.b}: ${overlap.significant} significant file(s) [${shared}]${suffix}`;
+          }),
+        ].join("\n"),
+      );
+    }
+
+    const text = sections.join("\n\n");
     return text.length > 60_000
       ? `${text.slice(0, 60_000)}\n\n[Candidate context truncated by Reviewbot]`
       : text;

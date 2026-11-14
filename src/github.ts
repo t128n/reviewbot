@@ -375,6 +375,21 @@ export class GitHub {
   }
 
   /**
+   * Execute a GraphQL query against the installation's GitHub API host and
+   * return the raw `{ data, errors }` envelope.
+   */
+  async graphql<T = unknown>(
+    octokit: GitHubClient,
+    query: string,
+    variables: Record<string, string | number> = {},
+  ): Promise<T> {
+    return this.request<T>(octokit, "POST /graphql", {
+      query,
+      variables,
+    });
+  }
+
+  /**
    * Bounded GitHub issue search used only for duplicate discovery. The query is
    * constructed by Reviewbot from issue text; callers must keep it scoped to
    * the installed repository.

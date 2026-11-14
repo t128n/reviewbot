@@ -9,7 +9,7 @@ import {
   credentialsDir,
 } from "./paths.ts";
 
-export const REVIEWBOT_VERSION = "1.1.0";
+export const REVIEWBOT_VERSION = "1.2.0";
 
 const HostSchema = v.pipe(
   v.string(),
