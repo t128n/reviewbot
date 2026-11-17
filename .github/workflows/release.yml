@@ -63,7 +63,7 @@ jobs:
           mkdir -p dist
           cd src
           bun build --compile --target=${{ matrix.target }} \
-            --asset=./prompt.md --asset=./prompts \
+            --asset=./prompt.md --asset=./prompts --asset=./skills \
             --outfile=../dist/${{ matrix.asset }} ./cli.ts
       - name: Smoke test native binary
         if: matrix.arch == runner.arch

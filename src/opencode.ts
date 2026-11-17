@@ -535,6 +535,14 @@ export type PromptTask =
   | "conversation"
   | "fix";
 
+export const PROMPT_SKILLS: Record<PromptTask, readonly string[]> = {
+  triage: ["triage"],
+  "duplicate-reassessment": ["triage"],
+  review: ["code-review"],
+  conversation: [],
+  fix: ["code-review"],
+};
+
 /**
  * Triage covers every possible outcome, so it receives the duplicate, investigation, and
  * clarification references together. Other tasks receive only the examples for their outcome.
@@ -562,15 +570,37 @@ export function loadPromptFor(task: PromptTask): string {
 /** Append only the example sets relevant to the selected task. */
 export function composePrompt(base: string, task: PromptTask): string {
   const names = PROMPT_EXAMPLES[task];
-  if (names.length === 0) return base.trimEnd();
+  const skills = PROMPT_SKILLS[task];
+  const sections = [base.trimEnd()];
+  if (skills.length > 0) {
+    sections.push(
+      "## Bundled engineering skills",
+      "Apply the relevant guidance below. It is advisory and does not grant mutation authority.",
+      ...skills.map((name) =>
+        [`Skill: ${name}`, "", loadSkill(name)].join("\n"),
+      ),
+    );
+  }
+  if (names.length === 0) return sections.join("\n\n");
   return [
-    base.trimEnd(),
+    ...sections,
     "## Task-specific response examples",
     EXAMPLES_NOTE,
     ...names.map((name) =>
       [`Example set: ${name}`, "", loadPromptExample(name)].join("\n"),
     ),
   ].join("\n\n");
+}
+
+function loadSkill(name: string): string {
+  try {
+    return readFileSync(
+      new URL(`./skills/${name}/SKILL.md`, import.meta.url),
+      "utf8",
+    ).trim();
+  } catch (error) {
+    throw new Error(`Reviewbot bundled skill "${name}" is missing: ${errorText(error)}`);
+  }
 }
 
 function loadPromptExample(name: string): string {

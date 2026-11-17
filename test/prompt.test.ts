@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import {
   PROMPT_EXAMPLES,
+  PROMPT_SKILLS,
   loadPrompt,
   loadPromptFor,
 } from "../src/opencode.ts";
@@ -110,7 +111,9 @@ describe("reviewbot instruction prompt", () => {
 
   test("keeps the shared prompt as the entry point and omits examples for fixes", () => {
     expect(loadPromptFor("review").startsWith(prompt.trimEnd())).toBe(true);
-    expect(loadPromptFor("fix")).toBe(prompt.trimEnd());
+    expect(loadPromptFor("fix").startsWith(prompt.trimEnd())).toBe(true);
+    expect(loadPromptFor("fix")).toContain("Skill: code-review");
+    expect(loadPromptFor("fix")).not.toContain("Example set:");
     expect(prompt).not.toContain("Example set:");
   });
 
@@ -121,5 +124,15 @@ describe("reviewbot instruction prompt", () => {
       .sort();
     const selected = [...new Set(Object.values(PROMPT_EXAMPLES).flat())].sort();
     expect(selected).toEqual(files);
+  });
+
+  test("includes the bundled skill for each applicable task", () => {
+    expect(loadPromptFor("triage")).toContain("Skill: triage");
+    expect(loadPromptFor("review")).toContain("Skill: code-review");
+    expect(loadPromptFor("fix")).toContain("Skill: code-review");
+    expect(loadPromptFor("conversation")).not.toContain("## Bundled engineering skills");
+    expect(Object.values(PROMPT_SKILLS).flat()).toEqual(
+      expect.arrayContaining(["triage", "code-review"]),
+    );
   });
 });

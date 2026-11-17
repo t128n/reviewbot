@@ -36,6 +36,6 @@ jobs:
           mkdir -p dist
           cd src
           bun build --compile --target=bun-linux-x64 \
-            --asset=./prompt.md --asset=./prompts \
+            --asset=./prompt.md --asset=./prompts --asset=./skills \
             --outfile=../dist/reviewbot ./cli.ts
           ../dist/reviewbot --version
