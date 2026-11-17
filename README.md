@@ -227,6 +227,9 @@ appended only for the current job kind (triage, duplicate reassessment, review, 
 conversation). A confirmed duplicate links the canonical issue, states the match briefly, and
 does not repeat evidence already tracked there. Investigation depth does not determine comment
 length, and the daemon still appends every deadline and lifecycle disclosure.
+Reviewbot also bundles adapted Matt Pocock triage and code-review skills under `src/skills/`;
+the relevant skill is included in each automatic task prompt and shipped in standalone
+binaries.
 
 ### Sessions
 
